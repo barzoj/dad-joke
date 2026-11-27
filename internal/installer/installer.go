@@ -92,6 +92,14 @@ func (s *Service) Install(ctx context.Context, opts InstallOptions) (InstallOutc
 			return empty, err
 		}
 	}
+	if opts.BackendURLSet {
+		if err := config.ValidateBackendURL(opts.BackendURL); err != nil {
+			return empty, err
+		}
+	}
+	if opts.HeartbeatIntervalSet && opts.HeartbeatIntervalSeconds < 1 {
+		return empty, fmt.Errorf("%w: heartbeat_interval_seconds must be >= 1 (got %d)", config.ErrInvalid, opts.HeartbeatIntervalSeconds)
+	}
 
 	s.host.Log("install: begin")
 

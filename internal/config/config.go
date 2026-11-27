@@ -1,14 +1,18 @@
 // Package config defines the versioned on-disk agent configuration contract
 // stored at C:\ProgramData\DadJoke\config.json.
 //
-// Schema fields include release polling settings (Issue #3) and persistent
-// machine identity (Issue #8):
+// Schema fields include release polling settings (Issue #3), persistent
+// machine identity (Issue #8), and optional AgentAPI heartbeat settings
+// (Issue #10):
 //
 //   - machine_id: RFC 4122 UUIDv4, generated once on first install and
 //     preserved across reinstalls and self-updates.
 //   - token: secret credential. Auto-generated values are 32 cryptographically
 //     random bytes encoded as 64-char lowercase hex. Explicit install --token
 //     values are stored verbatim (no truncation or re-encoding).
+//   - backend_url: optional AgentAPI base URL (empty = local-only, no heartbeat).
+//   - heartbeat_interval_seconds: heartbeat period when backend_url is set
+//     (default 60); preserved across reinstalls/self-updates.
 //
 // The raw token must never appear in service logs, debug output, or outbound
 // HTTP headers (e.g. GitHub Releases polls). Config.String redacts it.
@@ -32,26 +36,40 @@ const CurrentSchemaVersion = 1
 // DefaultPollIntervalSeconds is the default GitHub Releases poll interval (Issue #3).
 const DefaultPollIntervalSeconds = 60
 
+// DefaultHeartbeatIntervalSeconds is the default AgentAPI heartbeat interval (Issue #10).
+const DefaultHeartbeatIntervalSeconds = 60
+
 // ErrInvalid is returned when config fails validation.
 var ErrInvalid = errors.New("invalid config")
 
 // Config is the versioned JSON schema for ProgramData\DadJoke\config.json.
 type Config struct {
-	SchemaVersion       int    `json:"schema_version"`
-	ReleaseAPIURL       string `json:"release_api_url"`
-	PollIntervalSeconds int    `json:"poll_interval_seconds"`
-	MachineID           string `json:"machine_id"`
-	Token               string `json:"token"`
+	SchemaVersion            int    `json:"schema_version"`
+	ReleaseAPIURL            string `json:"release_api_url"`
+	PollIntervalSeconds      int    `json:"poll_interval_seconds"`
+	MachineID                string `json:"machine_id"`
+	Token                    string `json:"token"`
+	BackendURL               string `json:"backend_url"`
+	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds"`
 }
 
 // Default returns a new Config populated with compile-time / product defaults.
 // MachineID and Token are left empty; callers that persist config must populate
 // them (see NewMachineID / NewToken) before Validate / MarshalJSONBytes.
+// BackendURL defaults to empty (no heartbeat).
 func Default() Config {
 	return Config{
-		SchemaVersion:       CurrentSchemaVersion,
-		ReleaseAPIURL:       buildinfo.ReleaseAPIURL,
-		PollIntervalSeconds: DefaultPollIntervalSeconds,
+		SchemaVersion:            CurrentSchemaVersion,
+		ReleaseAPIURL:            buildinfo.ReleaseAPIURL,
+		PollIntervalSeconds:      DefaultPollIntervalSeconds,
+		HeartbeatIntervalSeconds: DefaultHeartbeatIntervalSeconds,
+	}
+}
+
+// applyDefaults fills zero optional fields so older on-disk documents remain valid.
+func (c *Config) applyDefaults() {
+	if c.HeartbeatIntervalSeconds < 1 {
+		c.HeartbeatIntervalSeconds = DefaultHeartbeatIntervalSeconds
 	}
 }
 
@@ -61,11 +79,11 @@ func (c Config) String() string {
 	if c.Token != "" {
 		tok = RedactedToken
 	}
-	return fmt.Sprintf("Config{SchemaVersion:%d ReleaseAPIURL:%q PollIntervalSeconds:%d MachineID:%q Token:%s}",
-		c.SchemaVersion, c.ReleaseAPIURL, c.PollIntervalSeconds, c.MachineID, tok)
+	return fmt.Sprintf("Config{SchemaVersion:%d ReleaseAPIURL:%q PollIntervalSeconds:%d MachineID:%q Token:%s BackendURL:%q HeartbeatIntervalSeconds:%d}",
+		c.SchemaVersion, c.ReleaseAPIURL, c.PollIntervalSeconds, c.MachineID, tok, c.BackendURL, c.HeartbeatIntervalSeconds)
 }
 
-// Validate checks required fields and ranges, including machine identity.
+// Validate checks required fields and ranges, including machine identity and backend_url.
 func (c Config) Validate() error {
 	if c.SchemaVersion < 1 {
 		return fmt.Errorf("%w: schema_version must be >= 1 (got %d)", ErrInvalid, c.SchemaVersion)
@@ -75,6 +93,12 @@ func (c Config) Validate() error {
 	}
 	if c.PollIntervalSeconds < 1 {
 		return fmt.Errorf("%w: poll_interval_seconds must be >= 1 (got %d)", ErrInvalid, c.PollIntervalSeconds)
+	}
+	if c.HeartbeatIntervalSeconds < 1 {
+		return fmt.Errorf("%w: heartbeat_interval_seconds must be >= 1 (got %d)", ErrInvalid, c.HeartbeatIntervalSeconds)
+	}
+	if err := ValidateBackendURL(c.BackendURL); err != nil {
+		return err
 	}
 	if err := ValidateMachineID(c.MachineID); err != nil {
 		return err
@@ -113,6 +137,7 @@ func Decode(r io.Reader) (Config, error) {
 
 // Parse reads JSON into Config without validating required fields.
 // Used by install reconcile to backfill missing machine_id / token.
+// Applies defaults for newly introduced optional fields (e.g. heartbeat interval).
 func Parse(r io.Reader) (Config, error) {
 	var c Config
 	dec := json.NewDecoder(r)
@@ -120,6 +145,7 @@ func Parse(r io.Reader) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	c.applyDefaults()
 	return c, nil
 }
 
@@ -151,9 +177,10 @@ func LoadFile(path string) (Config, error) {
 }
 
 // WithTestIdentity returns c with a fixed valid machine_id and token for tests.
-// Not for production use.
+// Not for production use. Also backfills heartbeat_interval_seconds when unset.
 func WithTestIdentity(c Config) Config {
 	c.MachineID = "550e8400-e29b-41d4-a716-446655440000"
 	c.Token = strings.Repeat("ab", TokenByteLen) // 64 hex chars
+	c.applyDefaults()
 	return c
 }

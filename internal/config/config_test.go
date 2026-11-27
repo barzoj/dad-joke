@@ -19,6 +19,12 @@ func TestDefaultHasReleaseDefaults(t *testing.T) {
 	if c.PollIntervalSeconds != DefaultPollIntervalSeconds {
 		t.Fatalf("PollIntervalSeconds = %d, want %d", c.PollIntervalSeconds, DefaultPollIntervalSeconds)
 	}
+	if c.HeartbeatIntervalSeconds != DefaultHeartbeatIntervalSeconds {
+		t.Fatalf("HeartbeatIntervalSeconds = %d, want %d", c.HeartbeatIntervalSeconds, DefaultHeartbeatIntervalSeconds)
+	}
+	if c.BackendURL != "" {
+		t.Fatalf("BackendURL = %q, want empty", c.BackendURL)
+	}
 	if c.ReleaseAPIURL == "" {
 		t.Fatal("ReleaseAPIURL empty")
 	}
@@ -33,18 +39,20 @@ func TestDefaultHasReleaseDefaults(t *testing.T) {
 
 func TestValidateRejectsBadValues(t *testing.T) {
 	t.Parallel()
-	base := WithTestIdentity(Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1})
+	base := WithTestIdentity(Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1})
 	cases := []struct {
 		name string
 		cfg  Config
 	}{
-		{name: "schema_zero", cfg: Config{SchemaVersion: 0, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
-		{name: "empty_url", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "  ", PollIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
-		{name: "poll_zero", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 0, MachineID: base.MachineID, Token: base.Token}},
-		{name: "poll_neg", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: -5, MachineID: base.MachineID, Token: base.Token}},
-		{name: "missing_machine_id", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, Token: base.Token}},
-		{name: "missing_token", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, MachineID: base.MachineID}},
-		{name: "bad_machine_id", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, MachineID: "nope", Token: base.Token}},
+		{name: "schema_zero", cfg: Config{SchemaVersion: 0, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
+		{name: "empty_url", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "  ", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
+		{name: "poll_zero", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 0, HeartbeatIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
+		{name: "poll_neg", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: -5, HeartbeatIntervalSeconds: 1, MachineID: base.MachineID, Token: base.Token}},
+		{name: "heartbeat_zero", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 0, MachineID: base.MachineID, Token: base.Token}},
+		{name: "bad_backend_url", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, BackendURL: "http://example.com", MachineID: base.MachineID, Token: base.Token}},
+		{name: "missing_machine_id", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, Token: base.Token}},
+		{name: "missing_token", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, MachineID: base.MachineID}},
+		{name: "bad_machine_id", cfg: Config{SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 1, HeartbeatIntervalSeconds: 1, MachineID: "nope", Token: base.Token}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,12 +70,14 @@ func TestRoundTripJSON(t *testing.T) {
 	c := WithTestIdentity(Default())
 	c.ReleaseAPIURL = "http://127.0.0.1:9/mock"
 	c.PollIntervalSeconds = 2
+	c.BackendURL = "https://api.example.com"
+	c.HeartbeatIntervalSeconds = 30
 
 	raw, err := MarshalJSONBytes(c)
 	if err != nil {
 		t.Fatalf("MarshalJSONBytes: %v", err)
 	}
-	for _, key := range []string{`"schema_version"`, `"machine_id"`, `"token"`} {
+	for _, key := range []string{`"schema_version"`, `"machine_id"`, `"token"`, `"backend_url"`, `"heartbeat_interval_seconds"`} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("missing %s in %s", key, raw)
 		}
@@ -79,6 +89,20 @@ func TestRoundTripJSON(t *testing.T) {
 	}
 	if got != c {
 		t.Fatalf("got %+v, want %+v", got, c)
+	}
+}
+
+func TestParseBackfillsHeartbeatInterval(t *testing.T) {
+	t.Parallel()
+	got, err := Parse(strings.NewReader(`{"schema_version":1,"release_api_url":"http://x","poll_interval_seconds":2,"machine_id":"550e8400-e29b-41d4-a716-446655440000","token":"ab"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HeartbeatIntervalSeconds != DefaultHeartbeatIntervalSeconds {
+		t.Fatalf("HeartbeatIntervalSeconds = %d, want default %d", got.HeartbeatIntervalSeconds, DefaultHeartbeatIntervalSeconds)
+	}
+	if got.BackendURL != "" {
+		t.Fatalf("BackendURL = %q", got.BackendURL)
 	}
 }
 

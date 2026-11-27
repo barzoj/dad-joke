@@ -8,7 +8,7 @@ This document defines the enduring architectural invariants of **Dad Joke**: a W
 - **Child session:** runs as a **Standard User**.
 - **Agent:** runs as a **Windows Service** under `LocalSystem`.
 - **Hardening:** agent binaries and configuration are protected by strict Windows ACLs—`SYSTEM` and `Administrators` only.
-- **Persistent identity:** `C:\ProgramData\DadJoke\config.json` holds a stable `machine_id` (RFC 4122 UUIDv4) and a secret `token` (auto-generated as 256-bit `crypto/rand` → 64-char lowercase hex, or an explicit install `--token` stored verbatim). Both are created on first install, preserved across reinstalls/self-updates (unless `--token` replaces the secret), and loaded at service startup. The raw `token` must never appear in service logs or outbound updater HTTP.
+- **Persistent identity & AgentAPI settings:** `C:\ProgramData\DadJoke\config.json` holds a stable `machine_id` (RFC 4122 UUIDv4) and a secret `token` (auto-generated as 256-bit `crypto/rand` → 64-char lowercase hex, or an explicit install `--token` stored verbatim). Optional `backend_url` (AgentAPI base URL; empty = local-only, no heartbeat) and `heartbeat_interval_seconds` (default `60`) are set via `dad-joke.exe install --backend-url` / `--heartbeat-interval`. Identity and backend settings are created on first install and preserved across reinstalls/self-updates (unless the matching flag replaces them). Loaded at service startup. The raw `token` must never appear in service logs or outbound updater / GitHub Releases HTTP.
 
 ## Strict Two-Layer Separation
 
@@ -113,6 +113,19 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
 ### Hardened container (dev)
 
 Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + static compile, then `gcr.io/distroless/static-debian12:nonroot` (final image has no Node/Go toolchain). Works from a fresh checkout because `gen/` is gitignored and rebuilt in-image. Dev `docker-compose.yml` runs `server` (non-root, `read_only: true`, `no-new-privileges`, `cap_drop: ALL`) with MongoDB (`--wiredTigerCacheSizeGB` capped). CI scans the image with Trivy (`HIGH`/`CRITICAL`). Production compose/Caddy/backups are not part of this repository.
+
+## Windows agent runtime (current)
+
+`dad-joke.exe run` (Windows Service under `LocalSystem`) runs two independent background loops via `service.Group`:
+
+| Loop | Package | Behavior |
+| --- | --- | --- |
+| **Auto-update** | `internal/updater` | Polls `release_api_url` on `poll_interval_seconds`; SHA-256–verified apply. Never sends `Authorization` / `token`. |
+| **Heartbeat** | `internal/heartbeat` | When `backend_url` is non-empty, posts `POST /v1/heartbeat` via the generated `gen/go/agentapi` client with `Authorization: Bearer <token>`, `machine_id`, compile-time `Version`, hostname, OS version, and `applied_policy_version` (`0` until policy apply exists). First beat promptly on start, then every `heartbeat_interval_seconds`. |
+
+Independence: backend DNS/5xx/401/outage is logged (with the raw `token` redacted) and must not stop the service or the updater loop. Empty `backend_url` disables heartbeats with no error noise (local-only `v0.0.1` mode).
+
+Transport for `backend_url`: empty allowed; non-empty requires `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`); no URL userinfo; system CA verification; TLS `MinVersion` 1.2; redirects re-validated and strip `Authorization` on cross-host hops.
 
 ## Engineering Principles
 

@@ -422,6 +422,7 @@ func TestReconcileConfigPreservesOnReinstall(t *testing.T) {
 	existing := &config.Config{
 		SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 3,
 		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32),
+		BackendURL: "https://api.example.com", HeartbeatIntervalSeconds: 45,
 	}
 	cfg, out, err := reconcileConfig(existing, InstallOptions{})
 	if err != nil {
@@ -429,6 +430,39 @@ func TestReconcileConfigPreservesOnReinstall(t *testing.T) {
 	}
 	if cfg.MachineID != existing.MachineID || cfg.Token != existing.Token || out.TokenStatus != TokenStatusPreserved {
 		t.Fatalf("cfg=%+v out=%+v", cfg, out)
+	}
+	if cfg.BackendURL != existing.BackendURL || cfg.HeartbeatIntervalSeconds != existing.HeartbeatIntervalSeconds {
+		t.Fatalf("backend settings not preserved: %+v", cfg)
+	}
+}
+
+func TestReconcileConfigSetsBackendURLFlag(t *testing.T) {
+	t.Parallel()
+	existing := &config.Config{
+		SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 3,
+		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32),
+		BackendURL: "https://old.example.com", HeartbeatIntervalSeconds: 45,
+	}
+	cfg, _, err := reconcileConfig(existing, InstallOptions{
+		BackendURLSet: true, BackendURL: "http://127.0.0.1:8080",
+		HeartbeatIntervalSet: true, HeartbeatIntervalSeconds: 15,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BackendURL != "http://127.0.0.1:8080" || cfg.HeartbeatIntervalSeconds != 15 {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}
+
+func TestReconcileConfigRejectsExternalHTTPBackend(t *testing.T) {
+	t.Parallel()
+	_, _, err := reconcileConfig(nil, InstallOptions{
+		TokenSet: true, Token: "tok",
+		BackendURLSet: true, BackendURL: "http://example.com",
+	})
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 
@@ -538,15 +572,15 @@ type mockHost struct {
 	serviceState  map[string]ServiceState
 	firewallRules map[string]bool
 
-	serviceEnsured         bool
-	firewallEnsured        bool
-	ensureServiceErr       error
-	ensureFirewallErr      error
-	firewallAlwaysReplace  bool
-	stopCalls              int
-	trackACLOrder          bool
-	order                  []string
-	logs                   []string
+	serviceEnsured        bool
+	firewallEnsured       bool
+	ensureServiceErr      error
+	ensureFirewallErr     error
+	firewallAlwaysReplace bool
+	stopCalls             int
+	trackACLOrder         bool
+	order                 []string
+	logs                  []string
 }
 
 func newMockHost() *mockHost {

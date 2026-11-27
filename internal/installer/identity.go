@@ -15,12 +15,22 @@ const (
 	TokenStatusPreserved = "preserved"
 )
 
-// InstallOptions carries optional install-time inputs (CLI --token).
+// InstallOptions carries optional install-time inputs (CLI flags).
 type InstallOptions struct {
 	// TokenSet is true when --token was explicitly passed.
 	TokenSet bool
 	// Token is the raw --token value when TokenSet is true (persisted verbatim).
 	Token string
+
+	// BackendURLSet is true when --backend-url was explicitly passed.
+	BackendURLSet bool
+	// BackendURL is the AgentAPI base URL when BackendURLSet is true (empty clears).
+	BackendURL string
+
+	// HeartbeatIntervalSet is true when --heartbeat-interval was explicitly passed.
+	HeartbeatIntervalSet bool
+	// HeartbeatIntervalSeconds is the heartbeat period when HeartbeatIntervalSet is true.
+	HeartbeatIntervalSeconds int
 }
 
 // InstallOutcome is returned after a successful Install so the CLI can print
@@ -33,7 +43,9 @@ type InstallOutcome struct {
 
 // reconcileConfig builds the desired on-disk config from an optional existing
 // document and install options. It never silently rotates a present machine_id
-// or token unless --token is explicitly supplied (token only).
+// or token unless --token is explicitly supplied (token only). Without
+// --backend-url / --heartbeat-interval, existing backend_url and
+// heartbeat_interval_seconds are preserved across reinstalls.
 func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Config, InstallOutcome, error) {
 	cfg := config.Default()
 	if existing != nil {
@@ -46,6 +58,9 @@ func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Confi
 		}
 		if cfg.PollIntervalSeconds < 1 {
 			cfg.PollIntervalSeconds = config.DefaultPollIntervalSeconds
+		}
+		if cfg.HeartbeatIntervalSeconds < 1 {
+			cfg.HeartbeatIntervalSeconds = config.DefaultHeartbeatIntervalSeconds
 		}
 	}
 
@@ -79,6 +94,22 @@ func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Confi
 		out.TokenStatus = TokenStatusGenerated
 	default:
 		out.TokenStatus = TokenStatusPreserved
+	}
+
+	if opts.BackendURLSet {
+		if err := config.ValidateBackendURL(opts.BackendURL); err != nil {
+			return config.Config{}, out, err
+		}
+		cfg.BackendURL = strings.TrimSpace(opts.BackendURL)
+	} else if err := config.ValidateBackendURL(cfg.BackendURL); err != nil {
+		return config.Config{}, out, fmt.Errorf("existing backend_url: %w", err)
+	}
+
+	if opts.HeartbeatIntervalSet {
+		if opts.HeartbeatIntervalSeconds < 1 {
+			return config.Config{}, out, fmt.Errorf("%w: heartbeat_interval_seconds must be >= 1 (got %d)", config.ErrInvalid, opts.HeartbeatIntervalSeconds)
+		}
+		cfg.HeartbeatIntervalSeconds = opts.HeartbeatIntervalSeconds
 	}
 
 	if err := cfg.Validate(); err != nil {

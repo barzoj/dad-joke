@@ -21,6 +21,10 @@ func TestFetchLatestHeadersAndParse(t *testing.T) {
 		if r.Header.Get("X-Agent-Version") != "0.0.1-dev" {
 			t.Errorf("X-Agent-Version = %q", r.Header.Get("X-Agent-Version"))
 		}
+		// AC #3: raw agent token must never be sent to GitHub Releases.
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("Authorization must be absent on release polls, got %q", auth)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"tag_name":"v0.0.2",

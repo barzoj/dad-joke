@@ -193,6 +193,34 @@ func TestInstallRejectsEmptyTokenFlag(t *testing.T) {
 	}
 }
 
+func TestInstallParsesBackendURLAndHeartbeatInterval(t *testing.T) {
+	t.Parallel()
+	fi := &fakeInstaller{}
+	code := Run([]string{"install", "--backend-url", "http://127.0.0.1:9", "--heartbeat-interval", "30"}, Dependencies{
+		Installer: fi, Runner: &fakeRunner{},
+	})
+	if code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !fi.lastOpts.BackendURLSet || fi.lastOpts.BackendURL != "http://127.0.0.1:9" {
+		t.Fatalf("opts = %+v", fi.lastOpts)
+	}
+	if !fi.lastOpts.HeartbeatIntervalSet || fi.lastOpts.HeartbeatIntervalSeconds != 30 {
+		t.Fatalf("opts = %+v", fi.lastOpts)
+	}
+}
+
+func TestInstallRejectsExternalHTTPBackendURL(t *testing.T) {
+	t.Parallel()
+	var stderr bytes.Buffer
+	code := Run([]string{"install", "--backend-url", "http://example.com"}, Dependencies{
+		Stderr: &stderr, Installer: &fakeInstaller{}, Runner: &fakeRunner{},
+	})
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want usage; stderr=%q", code, stderr.String())
+	}
+}
+
 func TestInstallPrintsGeneratedTokenOnce(t *testing.T) {
 	t.Parallel()
 	fi := &fakeInstaller{}
