@@ -29,6 +29,11 @@ func (t HandlerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if r.Host == "" {
 		r.Host = "control.invalid"
 	}
+	// Propagate the original MCP peer address so ControlAPI auth rate limits
+	// key by client IP. Never trust X-Forwarded-For on this in-process hop.
+	if addr := PeerAddrFromContext(r.Context()); addr != "" {
+		r.RemoteAddr = addr
+	}
 	rec := httptest.NewRecorder()
 	t.Handler.ServeHTTP(rec, r)
 	resp := rec.Result()

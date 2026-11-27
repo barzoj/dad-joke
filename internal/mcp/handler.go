@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -50,8 +51,8 @@ func New(cfg Config) (*Server, error) {
 	stream := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
 		return mcpServer
 	}, &mcpsdk.StreamableHTTPOptions{
-		Stateless:     true,
-		JSONResponse:  true,
+		Stateless:    true,
+		JSONResponse: true,
 	})
 	s.http = s.authMiddleware(stream)
 	return s, nil
@@ -64,17 +65,20 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Carry the real MCP peer address into in-process ControlAPI RoundTrips
+		// so AuthFailureLimiter keys by client IP (never X-Forwarded-For).
+		ctx := WithPeerAddr(r.Context(), r.RemoteAddr)
+		r = r.WithContext(ctx)
+
 		// Stateless Streamable HTTP uses POST for all client→server messages.
-		// Missing auth on POST must be 401 at the HTTP transport layer.
+		// Missing/invalid/revoked credentials are rejected at the HTTP layer.
 		if r.Method == http.MethodPost || r.Method == http.MethodGet || r.Method == http.MethodDelete {
 			raw, fromCookie := extractCredential(r)
-			if raw == "" {
-				s.writeUnauthorized(w)
-				return
-			}
-			if err := s.probeAuth(r.Context(), raw, fromCookie); err != nil {
+			// Always probe ControlAPI — including empty credentials — so the
+			// shared AuthFailureLimiter is charged by peer IP (DRY with ControlAPI).
+			if err := s.probeAuth(ctx, raw, fromCookie); err != nil {
 				s.logf("mcp auth rejected: %s", redactErr(err, raw))
-				s.writeUnauthorized(w)
+				s.writeAuthFailure(w, err)
 				return
 			}
 		}
@@ -83,29 +87,61 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 }
 
 // probeAuth validates credentials via ControlAPI (ListMachines works for both
-// dj_pat_ and dj_ses_ / cookie sessions; GetMe is session-only).
+// dj_pat_ and dj_ses_ / cookie sessions; GetMe is session-only). Empty
+// credentials still hit ControlAPI so missing-auth burns the IP failure budget.
 func (s *Server) probeAuth(ctx context.Context, raw string, fromCookie bool) error {
-	resp, err := s.client.ListMachinesWithResponse(ctx, forwardAuth(raw, fromCookie))
+	var editors []controlapi.RequestEditorFn
+	if raw != "" {
+		editors = append(editors, forwardAuth(raw, fromCookie))
+	}
+	resp, err := s.client.ListMachinesWithResponse(ctx, editors...)
 	if err != nil {
 		return mapClientErr(err, raw)
 	}
-	switch resp.StatusCode() {
-	case http.StatusOK:
+	if resp.StatusCode() == http.StatusOK {
 		return nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return mapHTTPStatus(resp.StatusCode(), resp.Body, raw)
-	default:
-		// Unexpected upstream status still blocks MCP (fail closed on auth path).
-		return mapHTTPStatus(resp.StatusCode(), resp.Body, raw)
 	}
+	var hdr http.Header
+	if resp.HTTPResponse != nil {
+		hdr = resp.HTTPResponse.Header
+	}
+	return mapHTTPStatus(resp.StatusCode(), resp.Body, hdr, raw)
 }
 
-func (s *Server) writeUnauthorized(w http.ResponseWriter) {
+func (s *Server) writeAuthFailure(w http.ResponseWriter, err error) {
+	status := http.StatusUnauthorized
+	code := "unauthorized"
+	message := "missing or invalid credentials"
+	retryAfter := ""
+
+	var te *ToolError
+	if errors.As(err, &te) && te != nil {
+		switch {
+		case te.Status == http.StatusTooManyRequests:
+			status = http.StatusTooManyRequests
+			code = "rate_limited"
+			message = firstNonEmpty(te.Message, "too many requests")
+			retryAfter = te.RetryAfter
+		case te.Status >= 500 || te.Status == http.StatusServiceUnavailable:
+			status = http.StatusServiceUnavailable
+			code = firstNonEmpty(te.Code, "unavailable")
+			message = firstNonEmpty(te.Message, "authentication backend unavailable")
+		case te.Status == http.StatusForbidden, te.Status == http.StatusUnauthorized, te.Status == 0:
+			// keep 401
+		default:
+			// Auth gate: fail closed as 401 for unexpected 4xx.
+		}
+		message = RedactSecrets(message)
+	}
+
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(controlapi.ErrorResponse{
-		Code:      "unauthorized",
-		Message:   "missing or invalid credentials",
+		Code:      code,
+		Message:   message,
 		RequestId: uuid.NewString(),
 	})
 }

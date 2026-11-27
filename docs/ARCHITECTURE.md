@@ -74,7 +74,7 @@ Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, 
 
 | Concern | Behavior |
 | --- | --- |
-| **Auth** | Every MCP HTTP request requires `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie. Credentials are probed via ControlAPI (`GET /v1/machines`) before the MCP session proceeds; missing/invalid/revoked credentials return HTTP `401` with no raw token details. The same credentials are forwarded on every tool → ControlAPI call so tenant scoping stays in ControlAPI. |
+| **Auth** | Every MCP HTTP request requires `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie. Credentials (including empty/missing) are probed via ControlAPI (`GET /v1/machines`) before the MCP session proceeds so ControlAPI's `AuthFailureLimiter` is charged by the real MCP peer `RemoteAddr` (propagated on the in-process RoundTrip; never from `X-Forwarded-For`). Probe outcomes map to HTTP `401`/`403`→`401`, `429`→`429` (with `Retry-After`), `5xx`→`503`, with no raw token details. The same credentials are forwarded on every tool → ControlAPI call so tenant scoping stays in ControlAPI. |
 | **Tools (exactly 7)** | `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job` (read or `action=cancel`), `list_events`, `manage_agent_tokens` (`action=create\|list\|revoke`) |
 | **Errors** | Upstream ControlAPI `400` / `401` / `404` / `409` / `413` / `429` (and tool argument validation) map to clean MCP tool errors: no stack traces; raw `dj_pat_` / `dj_agt_` / `dj_ses_` secrets are redacted from logs and error bodies. Streamable HTTP rejects missing/invalid `Accept` per the MCP transport. |
 

@@ -201,6 +201,12 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+// Handler returns the root HTTP handler. Intended for in-process tests that
+// need to set RemoteAddr (e.g. MCP auth rate-limit isolation).
+func (s *Server) Handler() http.Handler {
+	return s.http.Handler
+}
+
 // Addr returns the bound address after Serve/ListenAndServe starts (best-effort).
 func (s *Server) Addr() string {
 	if s.ln != nil {

@@ -113,7 +113,7 @@ func (s *Server) listMachines(ctx context.Context, req *mcpsdk.CallToolRequest, 
 		return nil, nil, mapClientErr(err, secret)
 	}
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-		return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
 	return jsonToolResult(*resp.JSON200)
 }
@@ -132,7 +132,7 @@ func (s *Server) getMachine(ctx context.Context, req *mcpsdk.CallToolRequest, in
 		return nil, nil, mapClientErr(err, secret)
 	}
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-		return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
 	return jsonToolResult(*resp.JSON200)
 }
@@ -158,7 +158,7 @@ func (s *Server) setPolicy(ctx context.Context, req *mcpsdk.CallToolRequest, in 
 		return nil, nil, mapClientErr(err, secret)
 	}
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-		return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
 	return jsonToolResult(*resp.JSON200)
 }
@@ -194,7 +194,7 @@ func (s *Server) runScript(ctx context.Context, req *mcpsdk.CallToolRequest, in 
 		return nil, nil, mapClientErr(err, secret)
 	}
 	if resp.StatusCode() != http.StatusCreated || resp.JSON201 == nil {
-		return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
 	return jsonToolResult(*resp.JSON201)
 }
@@ -216,7 +216,7 @@ func (s *Server) getJob(ctx context.Context, req *mcpsdk.CallToolRequest, in get
 			return nil, nil, mapClientErr(err, secret)
 		}
 		if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-			return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
 		return jsonToolResult(*resp.JSON200)
 	case "cancel":
@@ -225,7 +225,7 @@ func (s *Server) getJob(ctx context.Context, req *mcpsdk.CallToolRequest, in get
 			return nil, nil, mapClientErr(err, secret)
 		}
 		if resp.StatusCode() != http.StatusNoContent {
-			return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
 		return jsonToolResult(map[string]any{"id": id.String(), "canceled": true})
 	default:
@@ -273,7 +273,7 @@ func (s *Server) listEvents(ctx context.Context, req *mcpsdk.CallToolRequest, in
 		return nil, nil, mapClientErr(err, secret)
 	}
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-		return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
 	return jsonToolResult(*resp.JSON200)
 }
@@ -291,7 +291,7 @@ func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequ
 			return nil, nil, mapClientErr(err, secret)
 		}
 		if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-			return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
 		return jsonToolResult(*resp.JSON200)
 	case "create":
@@ -304,7 +304,7 @@ func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequ
 			return nil, nil, mapClientErr(err, secret)
 		}
 		if resp.StatusCode() != http.StatusCreated || resp.JSON201 == nil {
-			return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
 		return jsonToolResult(*resp.JSON201)
 	case "revoke":
@@ -317,7 +317,7 @@ func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequ
 			return nil, nil, mapClientErr(err, secret)
 		}
 		if resp.StatusCode() != http.StatusNoContent {
-			return nil, nil, mapHTTPStatus(resp.StatusCode(), resp.Body, secret)
+			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
 		return jsonToolResult(map[string]any{"id": id.String(), "revoked": true})
 	default:
@@ -333,6 +333,14 @@ func jsonToolResult(v any) (*mcpsdk.CallToolResult, any, error) {
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(b)}},
 	}, v, nil
+}
+
+func mapResponseStatus(status int, body []byte, httpResp *http.Response, knownSecrets ...string) error {
+	var hdr http.Header
+	if httpResp != nil {
+		hdr = httpResp.Header
+	}
+	return mapHTTPStatus(status, body, hdr, knownSecrets...)
 }
 
 func parseUUID(field, raw string) (openapi_types.UUID, error) {
