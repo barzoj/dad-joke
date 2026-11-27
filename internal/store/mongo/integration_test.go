@@ -168,3 +168,74 @@ func TestIntegration_EmptyTenantRejected(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestIntegration_MachinesCrossTenantSameIDAndUpsertCount(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+
+	tenA := &store.Tenant{Name: "mach-a-" + uuid.NewString()[:8]}
+	tenB := &store.Tenant{Name: "mach-b-" + uuid.NewString()[:8]}
+	if err := st.Tenants().Create(ctx, tenA); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenants().Create(ctx, tenB); err != nil {
+		t.Fatal(err)
+	}
+
+	machineID := uuid.NewString()
+	now := time.Now().UTC()
+	if err := st.Machines().Upsert(ctx, &store.Machine{
+		ID: machineID, TenantID: tenA.ID, Hostname: "a",
+		OSVersion: "w", AgentVersion: "1", LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Machines().Upsert(ctx, &store.Machine{
+		ID: machineID, TenantID: tenB.ID, Hostname: "b",
+		OSVersion: "w", AgentVersion: "2", LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotA, err := st.Machines().Get(ctx, tenA.ID, machineID)
+	if err != nil || gotA.Hostname != "a" {
+		t.Fatalf("tenant A: %v %+v", err, gotA)
+	}
+	gotB, err := st.Machines().Get(ctx, tenB.ID, machineID)
+	if err != nil || gotB.Hostname != "b" {
+		t.Fatalf("tenant B: %v %+v", err, gotB)
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := st.Machines().Upsert(ctx, &store.Machine{
+			ID: machineID, TenantID: tenA.ID, Hostname: "a-updated",
+			OSVersion: "w", AgentVersion: "1.1", LastSeenAt: now.Add(time.Duration(i) * time.Second),
+			AppliedPolicyVersion: int32(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := st.coll(collMachines).CountDocuments(ctx, bson.D{
+		{Key: "tenant_id", Value: tenA.ID},
+		{Key: "machine_id", Value: machineID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("document count for (tenantA, machine) = %d, want 1", n)
+	}
+	total, err := st.coll(collMachines).CountDocuments(ctx, bson.D{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total machine docs = %d, want 2 (one per tenant)", total)
+	}
+
+	listedA, err := st.Machines().ListByTenant(ctx, tenA.ID)
+	if err != nil || len(listedA) != 1 || listedA[0].Hostname != "a-updated" {
+		t.Fatalf("list A: %v %+v", err, listedA)
+	}
+}

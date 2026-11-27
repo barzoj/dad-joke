@@ -7,6 +7,7 @@ import (
 
 	"github.com/barzoj/dad-joke/gen/go/agentapi"
 	"github.com/barzoj/dad-joke/internal/authctx"
+	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/google/uuid"
 )
@@ -45,17 +46,24 @@ func (a *AgentAPI) PostHeartbeat(ctx context.Context, req agentapi.PostHeartbeat
 		}, nil
 	}
 	body := req.Body
-	now := a.now()
 	machineID := body.MachineId.String()
+	if err := config.ValidateMachineID(machineID); err != nil {
+		return agentapi.PostHeartbeat400JSONResponse{
+			Code:      "bad_request",
+			Message:   "machine_id must be a UUIDv4",
+			RequestId: uuid.NewString(),
+		}, nil
+	}
+	now := a.now()
 
-	existing, err := a.Store.Machines().Get(ctx, tenantID, machineID)
 	desired := int32(0)
+	pol, err := a.Store.Policies().Get(ctx, tenantID, machineID)
 	if err == nil {
-		desired = existing.DesiredPolicyVersion
+		desired = pol.Version
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return agentapi.PostHeartbeat500JSONResponse{
 			Code:      "internal_error",
-			Message:   "machine lookup failed",
+			Message:   "policy lookup failed",
 			RequestId: uuid.NewString(),
 		}, nil
 	}

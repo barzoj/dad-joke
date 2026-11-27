@@ -33,11 +33,15 @@ func TestTenantMachineAuditRoundTrip(t *testing.T) {
 	if ten.Name != "n" {
 		t.Fatal(ten)
 	}
-	mach := machineFromDoc(machineToDoc(&store.Machine{
+	doc := machineToDoc(&store.Machine{
 		ID: "m", TenantID: "1", Hostname: "h", OSVersion: "w",
 		AgentVersion: "1", LastSeenAt: now, AppliedPolicyVersion: 2, DesiredPolicyVersion: 3,
-	}))
-	if mach.DesiredPolicyVersion != 3 {
+	})
+	if doc.ID != "1|m" || doc.MachineID != "m" {
+		t.Fatalf("machine doc key = %+v", doc)
+	}
+	mach := machineFromDoc(doc)
+	if mach.ID != "m" || mach.DesiredPolicyVersion != 3 {
 		t.Fatal(mach)
 	}
 	aud := auditFromDoc(auditToDoc(&store.AuditEntry{

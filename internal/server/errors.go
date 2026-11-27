@@ -52,3 +52,12 @@ func writeTooManyRequests(w http.ResponseWriter, reqID string, retryAfter time.D
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	writeAPIError(w, http.StatusTooManyRequests, "rate_limited", "too many requests", reqID)
 }
+
+// writeRequestBindError maps oapi-codegen request/path bind failures to ErrorResponse JSON.
+func writeRequestBindError(w http.ResponseWriter, r *http.Request, err error) {
+	msg := "invalid request"
+	if err != nil && err.Error() != "" {
+		msg = err.Error()
+	}
+	writeAPIError(w, http.StatusBadRequest, "bad_request", msg, requestID(r))
+}

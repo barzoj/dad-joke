@@ -18,7 +18,7 @@ func (m machineStore) Upsert(ctx context.Context, mach *store.Machine) error {
 	}
 	doc := machineToDoc(mach)
 	_, err := m.s.coll(collMachines).ReplaceOne(ctx,
-		bson.D{{Key: "_id", Value: doc.ID}, {Key: "tenant_id", Value: doc.TenantID}},
+		bson.D{{Key: "_id", Value: doc.ID}},
 		doc,
 		options.Replace().SetUpsert(true),
 	)
@@ -28,8 +28,7 @@ func (m machineStore) Upsert(ctx context.Context, mach *store.Machine) error {
 func (m machineStore) Get(ctx context.Context, tenantID, machineID string) (*store.Machine, error) {
 	var d machineDoc
 	err := m.s.coll(collMachines).FindOne(ctx, bson.D{
-		{Key: "_id", Value: machineID},
-		{Key: "tenant_id", Value: tenantID},
+		{Key: "_id", Value: machineKey(tenantID, machineID)},
 	}).Decode(&d)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, store.ErrNotFound
@@ -43,7 +42,7 @@ func (m machineStore) Get(ctx context.Context, tenantID, machineID string) (*sto
 func (m machineStore) ListByTenant(ctx context.Context, tenantID string) ([]store.Machine, error) {
 	cur, err := m.s.coll(collMachines).Find(ctx,
 		bson.D{{Key: "tenant_id", Value: tenantID}},
-		options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}),
+		options.Find().SetSort(bson.D{{Key: "machine_id", Value: 1}}),
 	)
 	if err != nil {
 		return nil, err

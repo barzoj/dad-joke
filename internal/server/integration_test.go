@@ -132,3 +132,95 @@ func TestIntegration_CrossTenantDelete404(t *testing.T) {
 		t.Fatalf("cross-tenant delete: %d %s", code, body)
 	}
 }
+
+func TestIntegration_HeartbeatMachinesTenantIsolationAndUpsert(t *testing.T) {
+	st := openMongoStore(t)
+	a, err := bootstrap.Run(context.Background(), st, "mongo-hb-a-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := bootstrap.Run(context.Background(), st, "mongo-hb-b-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := startTestServer(t, st, server.Config{})
+	tokenA := createAgentToken(t, base, a.RawKey)
+	tokenB := createAgentToken(t, base, b.RawKey)
+
+	machineID := uuid.NewString()
+	code, body := postHeartbeat(t, base, tokenA, map[string]any{
+		"machine_id": machineID, "agent_version": "a1", "hostname": "host-a",
+		"os_version": "WinA", "applied_policy_version": 1,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("tenant A heartbeat: %d %s", code, body)
+	}
+	code, body = postHeartbeat(t, base, tokenB, map[string]any{
+		"machine_id": machineID, "agent_version": "b9", "hostname": "host-b",
+		"os_version": "WinB", "applied_policy_version": 9,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("tenant B heartbeat: %d %s", code, body)
+	}
+
+	// Spoof: Tenant B heartbeats same machine_id again — must not touch Tenant A.
+	code, body = postHeartbeat(t, base, tokenB, map[string]any{
+		"machine_id": machineID, "agent_version": "b-spoof", "hostname": "spoofed",
+		"os_version": "WinB", "applied_policy_version": 99,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("spoof heartbeat: %d %s", code, body)
+	}
+
+	gotA, err := st.Machines().Get(context.Background(), a.TenantID, machineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotA.Hostname != "host-a" || gotA.AgentVersion != "a1" || gotA.AppliedPolicyVersion != 1 {
+		t.Fatalf("tenant A polluted: %+v", gotA)
+	}
+	gotB, err := st.Machines().Get(context.Background(), b.TenantID, machineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotB.Hostname != "spoofed" || gotB.AgentVersion != "b-spoof" {
+		t.Fatalf("tenant B not updated: %+v", gotB)
+	}
+
+	// Repeated heartbeats for A must not create extra documents.
+	for i := 0; i < 3; i++ {
+		code, body = postHeartbeat(t, base, tokenA, map[string]any{
+			"machine_id": machineID, "agent_version": "a-refresh", "hostname": "host-a",
+			"os_version": "WinA", "applied_policy_version": 2,
+		})
+		if code != http.StatusOK {
+			t.Fatalf("repeat heartbeat: %d %s", code, body)
+		}
+	}
+	listedA, err := st.Machines().ListByTenant(context.Background(), a.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listedA) != 1 {
+		t.Fatalf("tenant A document count = %d, want 1", len(listedA))
+	}
+	if listedA[0].AgentVersion != "a-refresh" || listedA[0].AppliedPolicyVersion != 2 {
+		t.Fatalf("in-place update failed: %+v", listedA[0])
+	}
+
+	code, _, body = doJSON(t, http.MethodGet, base+"/v1/machines/"+machineID, b.RawKey, nil)
+	if code != http.StatusOK {
+		t.Fatalf("B get own machine: %d %s", code, body)
+	}
+	code, _, body = doJSON(t, http.MethodGet, base+"/v1/machines", a.RawKey, nil)
+	if code != http.StatusOK {
+		t.Fatalf("A list: %d %s", code, body)
+	}
+	var listA []map[string]any
+	if err := json.Unmarshal(body, &listA); err != nil {
+		t.Fatal(err)
+	}
+	if len(listA) != 1 || listA[0]["machine_id"] != machineID || listA[0]["hostname"] != "host-a" {
+		t.Fatalf("A list unexpected: %s", body)
+	}
+}
