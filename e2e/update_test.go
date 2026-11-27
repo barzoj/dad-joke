@@ -157,6 +157,14 @@ func buildVersionedExe(t *testing.T, version, outPath string) {
 	}
 }
 
+// pinNoSelfUpdate points release_api_url at an unreachable loopback URL before
+// install. CI builds Version=0.0.1-dev; GitHub latest v0.0.1 is IsNewer, so a
+// live poll would TriggerApply and tear down the service mid-test.
+func pinNoSelfUpdate(t *testing.T) {
+	t.Helper()
+	writeUpdateConfig(t, "http://127.0.0.1:1/e2e-no-self-update", 3600)
+}
+
 func writeUpdateConfig(t *testing.T, releaseURL string, pollSeconds int) {
 	t.Helper()
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {

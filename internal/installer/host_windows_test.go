@@ -65,3 +65,18 @@ func TestBinaryAndDataACLSDDLMatchArchitecture(t *testing.T) {
 		t.Fatalf("binary ACL must not grant Users (BU): %s", binaryACLSDDL)
 	}
 }
+
+func TestIsAccessDenied(t *testing.T) {
+	if isAccessDenied(nil) {
+		t.Fatal("nil must not be access denied")
+	}
+	if !isAccessDenied(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("ERROR_ACCESS_DENIED")
+	}
+	if !isAccessDenied(os.ErrPermission) {
+		t.Fatal("ErrPermission")
+	}
+	if isAccessDenied(os.ErrNotExist) {
+		t.Fatal("ErrNotExist is not access denied")
+	}
+}

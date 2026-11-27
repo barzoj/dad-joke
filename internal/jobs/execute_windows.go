@@ -13,7 +13,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/barzoj/dad-joke/internal/store"
 	"golang.org/x/sys/windows"
 )
 
@@ -21,12 +20,18 @@ import (
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so the entire process tree dies on
 // timeout or handle close.
 //
-// Processes are created with CREATE_SUSPENDED, assigned to the job, then
-// resumed — so no grandchild can spawn before job membership is established.
+// Processes are created with CREATE_SUSPENDED|CREATE_NO_WINDOW, assigned to
+// the job, then resumed — so no grandchild can spawn before job membership is
+// established, and Session 0 console allocation cannot hang powershell.exe.
 // Stdio handles are inherited only via PROC_THREAD_ATTRIBUTE_HANDLE_LIST so a
 // LocalSystem service never duplicates arbitrary inheritable handles into the
 // remote script process.
 type JobObjectExecutor struct{}
+
+// pipeDrainGrace is how long Run waits for stdout/stderr copy goroutines
+// after the child process has exited (or been killed) before forcibly closing
+// the read pipes so result posting cannot stall forever.
+const pipeDrainGrace = 3 * time.Second
 
 // Run implements Executor.
 func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeout time.Duration) (ExecResult, error) {
@@ -145,12 +150,6 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 	}
 
 	var pi windows.ProcessInformation
-	flags := uint32(
-		windows.CREATE_SUSPENDED |
-			windows.CREATE_NEW_PROCESS_GROUP |
-			windows.CREATE_UNICODE_ENVIRONMENT |
-			windows.EXTENDED_STARTUPINFO_PRESENT,
-	)
 	// #nosec G204 -- payload is an authorized remote job from the control plane
 	err = windows.CreateProcess(
 		appName,
@@ -158,7 +157,7 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 		nil,
 		nil,
 		true, // required with PROC_THREAD_ATTRIBUTE_HANDLE_LIST; list restricts what is inherited
-		flags,
+		processCreationFlagBits(),
 		nil,
 		nil,
 		&si.StartupInfo,
@@ -226,7 +225,12 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 	_ = windows.CloseHandle(jobHandle)
 	jobOpen = false
 
-	wg.Wait()
+	// Never block forever on pipe drain: after kill/exit a stray inheritor can
+	// keep the write ends open. Force-close readers so we still post a result.
+	_ = awaitWaitGroup(&wg, pipeDrainGrace, func() {
+		_ = stdoutR.Close()
+		_ = stderrR.Close()
+	})
 	dur := time.Since(start).Milliseconds()
 
 	code := int(exitCode)
@@ -257,23 +261,6 @@ func waitProcess(ctx context.Context, proc windows.Handle) (timedOut bool) {
 			return false
 		}
 		// WAIT_TIMEOUT — keep polling until ctx deadline/cancel.
-	}
-}
-
-func buildCommand(jobType, payload string) ([]string, error) {
-	switch jobType {
-	case store.JobTypePowerShell:
-		return []string{
-			"powershell.exe",
-			"-NoProfile",
-			"-NonInteractive",
-			"-ExecutionPolicy", "Bypass",
-			"-Command", payload,
-		}, nil
-	case store.JobTypeCmd:
-		return []string{"cmd.exe", "/C", payload}, nil
-	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnsupportedType, jobType)
 	}
 }
 

@@ -124,6 +124,7 @@ func TestTC10_HeartbeatToLocalAgentAPI(t *testing.T) {
 	token := "e2e-heartbeat-token-" + randomSuffix(8)
 	wantVersion := expectVersion(t)
 
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin,
 		"install",
 		"--token", token,

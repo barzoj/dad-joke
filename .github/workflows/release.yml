@@ -127,7 +127,7 @@ jobs:
       # and later promotion all use this exact digest (no rebuild).
       - name: Build & push multi-arch candidate
         id: build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2ea9 # v6.18.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64

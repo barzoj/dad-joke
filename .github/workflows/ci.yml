@@ -103,10 +103,14 @@ jobs:
           echo "commit=$commit" >> $env:GITHUB_OUTPUT
 
       - name: Build dad-joke.exe with ldflags
+        # Pin ReleaseAPIURL away from GitHub: CI Version is 0.0.1-dev and
+        # IsNewer(v0.0.1, 0.0.1-dev)==true, so a live latest release would
+        # TriggerApply mid-E2E (claim without /result; service stuck on stop).
         run: |
           .\scripts\build.ps1 `
             -Version "${{ steps.meta.outputs.version }}" `
             -Commit "${{ steps.meta.outputs.commit }}" `
+            -ReleaseAPIURL "http://127.0.0.1:1/e2e-no-self-update" `
             -Output "dad-joke.exe"
 
       - name: Verify version subcommand (smoke)

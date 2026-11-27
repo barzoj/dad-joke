@@ -252,14 +252,84 @@ func waitForJobResult(t *testing.T, mock *mockJobsAPI, jobID string, timeout tim
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for result of %s; got %#v", jobID, mock.Results())
+			mock.mu.Lock()
+			claims := mock.claimCalls[jobID]
+			pending := append([]string(nil), mock.pendingIDs...)
+			results := append([]jobResultHit(nil), mock.results...)
+			mock.mu.Unlock()
+			t.Fatalf("timed out waiting for result of %s; claims=%d pending=%v got %#v\n%s",
+				jobID, claims, pending, results, dumpJobServiceDiagnostics(t, jobID))
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
+// dumpJobServiceDiagnostics captures local agent artifacts that explain
+// claim-without-result failures (self-update mid-job, execute errors, etc.).
+func dumpJobServiceDiagnostics(t *testing.T, jobID string) string {
+	t.Helper()
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- service/audit diagnostics for %s ---\n", jobID)
+
+	svcOut, _ := powershell(t, fmt.Sprintf(`
+$ErrorActionPreference='SilentlyContinue'
+$s = Get-Service -Name '%s'
+if (-not $s) { 'service=absent'; return }
+'status=' + $s.Status
+Get-CimInstance Win32_Service -Filter "Name='%s'" | Select-Object -ExpandProperty PathName
+`, serviceName, serviceName))
+	fmt.Fprintf(&b, "service:\n%s\n", svcOut)
+
+	if raw, err := os.ReadFile(configPath); err != nil {
+		fmt.Fprintf(&b, "config: %v\n", err)
+	} else {
+		var cfg map[string]any
+		if json.Unmarshal(raw, &cfg) == nil {
+			fmt.Fprintf(&b, "config.release_api_url=%v poll_interval_seconds=%v backend_url=%v\n",
+				cfg["release_api_url"], cfg["poll_interval_seconds"], cfg["backend_url"])
+		} else {
+			fmt.Fprintf(&b, "config: (unmarshal failed)\n")
+		}
+	}
+
+	auditPath := filepath.Join(dataDir, "jobs-audit.jsonl")
+	if raw, err := os.ReadFile(auditPath); err != nil {
+		fmt.Fprintf(&b, "audit %s: %v\n", auditPath, err)
+	} else {
+		lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+		fmt.Fprintf(&b, "audit lines=%d (filter job_id=%s):\n", len(lines), jobID)
+		for _, line := range lines {
+			if strings.Contains(line, jobID) || len(lines) <= 20 {
+				fmt.Fprintf(&b, "  %s\n", line)
+			}
+		}
+	}
+
+	evt, _ := powershell(t, `
+$ErrorActionPreference='SilentlyContinue'
+Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-30)} -MaxEvents 80 |
+  Where-Object {
+    $msg = [string]$_.Message
+    $_.ProviderName -match 'DadJoke|dad-joke' -or $msg -match 'dad-joke|jobs:'
+  } |
+  Select-Object -First 15 |
+  ForEach-Object {
+    $msg = (([string]$_.Message) -replace '\s+', ' ')
+    if ($msg.Length -gt 240) { $msg = $msg.Substring(0, 240) }
+    $_.TimeCreated.ToString('o') + ' id=' + $_.Id + ' ' + $_.LevelDisplayName + ' ' + $msg
+  }
+`)
+	if strings.TrimSpace(evt) == "" {
+		fmt.Fprintf(&b, "application events: (none matched)\n")
+	} else {
+		fmt.Fprintf(&b, "application events:\n%s\n", evt)
+	}
+	return b.String()
+}
+
 func installWithJobsBackend(t *testing.T, bin, token, backend string) {
 	t.Helper()
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin,
 		"install",
 		"--token", token,

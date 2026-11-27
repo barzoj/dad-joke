@@ -163,9 +163,18 @@ func (h *WindowsHost) FileExists(path string) (bool, error) {
 }
 
 func (h *WindowsHost) RemoveAll(path string) error {
-	err := os.RemoveAll(path)
-	if err == nil || errors.Is(err, os.ErrNotExist) {
-		return nil
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		err = os.RemoveAll(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		// Access denied while the service process / Defender still holds
+		// dad-joke.exe or dad-joke.exe.old — brief backoff then retry.
+		if !isAccessDenied(err) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 	// Self-deletion: if we cannot remove because the binary is locked, schedule
 	// a best-effort deferred delete via cmd after this process exits.
@@ -179,6 +188,17 @@ func (h *WindowsHost) RemoveAll(path string) error {
 		}
 	}
 	return err
+}
+
+func isAccessDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "access is denied") || strings.Contains(msg, "access denied")
 }
 
 func (h *WindowsHost) scheduleDeferredDelete(path string) {

@@ -69,6 +69,9 @@ func cleanupInstall(t *testing.T, bin string) {
 	_, _ = runAdmin(t, bin, "uninstall")
 	// Force-stop and wait for SERVICE_STOPPED before sc delete so a later
 	// install does not race StartService against a still-stopping instance.
+	// Also kill leftover dad-joke.exe (self-update apply / stuck StopPending)
+	// and retry deletes — Windows often returns Access denied while a handle
+	// or Defender scan still holds Program Files\DadJoke\*.exe(.old).
 	_, _ = powershell(t, fmt.Sprintf(`
 $ErrorActionPreference = 'SilentlyContinue'
 $svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
@@ -83,6 +86,7 @@ if ($svc) {
     Start-Sleep -Milliseconds 200
   } while ((Get-Date) -lt $deadline)
 }
+Get-Process -Name 'dad-joke' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 sc.exe delete '%s' | Out-Null
 # Wait until SCM forgets the name (marked-for-delete drain).
 $deadline = (Get-Date).AddSeconds(30)
@@ -92,9 +96,17 @@ do {
   Start-Sleep -Milliseconds 200
 } while ((Get-Date) -lt $deadline)
 netsh advfirewall firewall delete rule name='%s' | Out-Null
-Remove-Item -LiteralPath '%s' -Recurse -Force
-Remove-Item -LiteralPath '%s' -Recurse -Force
-Remove-Item -LiteralPath '%s.old' -Force
+function Remove-TreeRetry([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  for ($i = 0; $i -lt 10; $i++) {
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Start-Sleep -Milliseconds 300
+  }
+}
+Remove-TreeRetry '%s'
+Remove-TreeRetry '%s'
+Remove-TreeRetry '%s.old'
 `, serviceName, serviceName, serviceName, serviceName, serviceName, firewallRuleName, installDir, dataDir, installExe))
 }
 
@@ -119,6 +131,7 @@ func TestTC01_InstallAsAdmin(t *testing.T) {
 	cleanupInstall(t, bin)
 	t.Cleanup(func() { cleanupInstall(t, bin) })
 
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin, "install")
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
@@ -241,6 +254,7 @@ Write-Output 'ok'
 		cleanupInstall(t, bin)
 	})
 
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin, "install")
 	if err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
@@ -322,6 +336,9 @@ func TestTC06_MachineIdentityPersistence(t *testing.T) {
 	cleanupInstall(t, bin)
 	t.Cleanup(func() { cleanupInstall(t, bin) })
 
+	// Do not pinNoSelfUpdate here: that pre-creates config.json and makes a
+	// "fresh" install report token=(preserved). CI already bakes an unreachable
+	// ReleaseAPIURL into the e2e binary, so self-update is still disabled.
 	out, err := runAdmin(t, bin, "install")
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, out)
