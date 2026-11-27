@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 )
@@ -49,7 +50,13 @@ func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, chan
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-				<-done
+				// Bound stop wait so a stuck job pipe/CreateProcess cannot leave
+				// the service in RUNNING forever (uninstall Access denied / SCM
+				// timeout waiting for state 1 while last=4).
+				select {
+				case <-done:
+				case <-time.After(45 * time.Second):
+				}
 				changes <- svc.Status{State: svc.Stopped}
 				return false, 0
 			default:

@@ -19,6 +19,7 @@ func TestTC16_ServiceRestartPersistsConfigAndToken(t *testing.T) {
 	mock := startMockAgentAPI(t)
 	token := "e2e-restart-token-" + randomSuffix(8)
 
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin,
 		"install",
 		"--token", token,

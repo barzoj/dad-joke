@@ -265,6 +265,7 @@ func waitForJobResult(t *testing.T, mock *mockJobsAPI, jobID string, timeout tim
 
 func installWithJobsBackend(t *testing.T, bin, token, backend string) {
 	t.Helper()
+	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin,
 		"install",
 		"--token", token,
