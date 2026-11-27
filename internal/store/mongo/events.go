@@ -40,22 +40,40 @@ func (e eventStore) InsertBatch(ctx context.Context, events []store.Event) error
 	}
 	_, err := e.s.coll(collEvents).InsertMany(ctx, docs, options.InsertMany().SetOrdered(false))
 	if err != nil {
-		// Duplicate key on (tenant, machine, event_id) is idempotent success.
-		if mongo.IsDuplicateKeyError(err) {
-			return nil
-		}
-		var bwe mongo.BulkWriteException
-		if errors.As(err, &bwe) {
-			for _, we := range bwe.WriteErrors {
-				if !mongo.IsDuplicateKeyError(we) {
-					return err
-				}
-			}
+		// Only treat pure duplicate-key outcomes as idempotent success.
+		// mongo.IsDuplicateKeyError(BulkWriteException) is true when *any*
+		// write error is a duplicate — that would mask mixed failures.
+		if isOnlyDuplicateKeyBulkError(err) {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+// isOnlyDuplicateKeyBulkError reports whether err is an idempotent duplicate-key
+// outcome suitable to ignore on InsertMany.
+//
+// For BulkWriteException: every WriteError must be a duplicate-key error, and
+// WriteConcernError must be nil. An empty WriteErrors slice is not success
+// (fail closed). For non-bulk errors, falls back to mongo.IsDuplicateKeyError.
+func isOnlyDuplicateKeyBulkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var bwe mongo.BulkWriteException
+	if errors.As(err, &bwe) {
+		if bwe.WriteConcernError != nil || len(bwe.WriteErrors) == 0 {
+			return false
+		}
+		for _, we := range bwe.WriteErrors {
+			if !mongo.IsDuplicateKeyError(we) {
+				return false
+			}
+		}
+		return true
+	}
+	return mongo.IsDuplicateKeyError(err)
 }
 
 func (e eventStore) List(ctx context.Context, q store.EventQuery) (store.EventPage, error) {
