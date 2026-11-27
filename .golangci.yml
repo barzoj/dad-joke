@@ -22,6 +22,8 @@ linters:
         - (*os.file).Close
         - net/http.Response.Body.Close
         - (*compress/gzip.Reader).Close
+        - (*mongo.Cursor).Close
+        - go.mongodb.org/mongo-driver/v2/mongo.(*Cursor).Close
     govet:
       disable:
         - fieldalignment

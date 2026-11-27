@@ -68,6 +68,30 @@ Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400`
 
 Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, `CreatedApiKey`) and are absent from every `GET` summary/list model. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
 
+## Control-plane server & data layer (current)
+
+### DAL boundary (`internal/store`)
+
+Domain models are plain Go structs (string UUIDs, no `bson` tags, no `ObjectID`). Repository interfaces live in `internal/store`:
+
+`TenantStore`, `UserStore`, `TokenStore`, `MachineStore`, `PolicyStore`, `JobStore`, `EventStore`, `AuditStore`, plus `Pinger` and a `Store` facade (`EnsureIndexes`, `Close`).
+
+HTTP handlers and product logic talk only to these interfaces. An architecture test (`internal/archtest`) fails CI if any package outside `internal/store/mongo` imports `go.mongodb.org/mongo-driver`.
+
+### MongoDB implementation (`internal/store/mongo`)
+
+Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay inside the package. `EnsureIndexes(ctx)` creates idempotent unique/compound/TTL indexes at startup (tenant name, token kind+hash, event idempotency, event TTL, audit listing, etc.).
+
+### `cmd/server`
+
+- HTTP skeleton with `GET /healthz`: `200` + `{"status":"ok"}` when MongoDB `Ping` succeeds; `503` + `{"status":"unavailable"}` when it fails.
+- Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`), strict server timeouts, `http.MaxBytesReader` body limit, graceful shutdown on `SIGINT`/`SIGTERM`.
+- `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.
+
+### Hardened container (dev)
+
+Multi-stage `Dockerfile` produces a static Linux binary in `gcr.io/distroless/static-debian12:nonroot`. Dev `docker-compose.yml` runs `server` (non-root, `read_only: true`, `no-new-privileges`, `cap_drop: ALL`) with MongoDB (`--wiredTigerCacheSizeGB` capped). CI scans the image with Trivy (`HIGH`/`CRITICAL`). Production compose/Caddy/backups are not part of this surface.
+
 ## Engineering Principles
 
 | Principle | Meaning |
@@ -79,4 +103,4 @@ Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, 
 
 ## Independent Review & CI
 
-Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (API generate + race test/vet, Windows test/build, Linux race+coverage with an `internal/` floor excluding `gen/`, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).
+Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (API generate + race test/vet including live MongoDB DAL tests, Windows test/build, Linux race+coverage with an `internal/` floor excluding `gen/`, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint, Trivy image scan).

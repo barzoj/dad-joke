@@ -9,7 +9,7 @@ RELEASE_API_URL ?= https://api.github.com/repos/barzoj/dad-joke/releases/latest
 
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).ReleaseAPIURL=$(RELEASE_API_URL)
 
-.PHONY: test cover build build-windows vet generate
+.PHONY: test cover build build-windows build-server vet generate
 
 # TypeSpec → OpenAPI 3.0.0 → oapi-codegen. Output under gen/ (gitignored).
 generate:
@@ -22,6 +22,7 @@ test:
 	CGO_ENABLED=0 go test ./...
 
 # Race + atomic coverprofile (Linux/macOS with CGO). Enforces internal/ floor via scripts/coverage-report.py.
+# Set DAD_JOKE_MONGODB_URI to include live MongoDB DAL integration tests in coverage.
 cover:
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	python3 scripts/coverage-report.py --profile coverage.out --internal-min 70
@@ -34,3 +35,6 @@ build:
 
 build-windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o dad-joke.exe ./cmd/dad-joke
+
+build-server:
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o server ./cmd/server

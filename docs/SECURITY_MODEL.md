@@ -23,7 +23,7 @@ Therefore the product assumes the network and backends are hostile unless crypto
 | Runtime hardening | Server containers run non-root with a minimal attack surface. |
 | Abuse controls | Auth failures and sensitive mutations are rate-limited. |
 | Update integrity | Agent self-update verifies **SHA-256** of release assets before replace; failed verification aborts and cleans staging. |
-| Secure SDLC | Every change is gated by SAST and dependency vulnerability scanning in CI (CodeQL, gosec, govulncheck, golangci-lint). |
+| Secure SDLC | Every change is gated by SAST and dependency vulnerability scanning in CI (CodeQL, gosec, govulncheck, golangci-lint, Trivy image scan). |
 
 Parent-key signing of commands/policies is an additional invariant for future control-plane ↔ agent contracts: unsigned or unverifiable directives must not be applied once that control exists.
 
@@ -54,6 +54,7 @@ These controls exist in the current Windows agent / repository:
 - **Apply path allowlist** — `apply-update` may only replace the installed binary from a staging path under `ProgramData\DadJoke\updates\...`.
 - **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), `golangci-lint`, Renovate config validation, and Dependency Review (high/critical CVEs + AGPL-incompatible licenses) on PRs/`main`/weekly as applicable.
 - **HTTP auth/token/heartbeat/machine contracts** — TypeSpec `AgentBearerAuth` / `ControlBearerAuth`, agent-token and API-key CRUD shapes (raw secret only on `201 Created`), `POST /v1/heartbeat`, and machine listing; unified `ErrorResponse` including `429` + `Retry-After`.
+- **Server DAL + bootstrap** — `internal/store` domain interfaces with MongoDB isolated in `internal/store/mongo`; `bootstrap` stores SHA-256 hashes only for `dj_pat_...` keys; hardened non-root distroless container + Trivy image scan in CI.
 
 ## Invariant contracts (enforced as components land)
 

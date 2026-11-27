@@ -2,6 +2,7 @@
 /dad-joke
 /dad-joke.exe
 /dad-joke-windows-amd64.exe
+/server
 /dist/
 
 # Generated API artifacts (TypeSpec → OpenAPI → oapi-codegen)

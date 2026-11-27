@@ -191,3 +191,39 @@ jobs:
           fail-on-severity: high
           # Block source-available / proprietary-style licenses incompatible with AGPL-3.0.
           deny-licenses: SSPL-1.0, BUSL-1.1, Elastic-2.0
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build server image
+        run: docker build -t dad-joke-server:ci .
+
+      - name: Install Trivy CLI
+        env:
+          TRIVY_VERSION: "0.76.2"
+          TRIVY_LINUX_AMD64_SHA256: "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+        run: |
+          set -euo pipefail
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          echo "${TRIVY_LINUX_AMD64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan image (HIGH,CRITICAL)
+        run: |
+          set -euo pipefail
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --format table dad-joke-server:ci
+
