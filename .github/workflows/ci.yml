@@ -183,6 +183,12 @@ jobs:
           DAD_JOKE_MONGODB_URI: mongodb://127.0.0.1:27017
         run: go test -tags=e2e -v -timeout 15m ./e2e/linux/...
 
+      - name: MCP TypeScript SDK client regression (@modelcontextprotocol/sdk)
+        env:
+          CGO_ENABLED: "0"
+          DAD_JOKE_MONGODB_URI: mongodb://127.0.0.1:27017
+        run: ./scripts/mcp-sdk-e2e.sh
+
   compose-smoke:
     name: Compose image smoke + smoke-e2e.sh
     runs-on: ubuntu-latest

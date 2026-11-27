@@ -115,7 +115,12 @@ func (s *Server) listMachines(ctx context.Context, req *mcpsdk.CallToolRequest, 
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
-	return jsonToolResult(*resp.JSON200)
+	// MCP structuredContent must be a JSON object (never a top-level array).
+	machines := *resp.JSON200
+	if machines == nil {
+		machines = controlapi.ListMachines200JSONResponse{}
+	}
+	return jsonToolResult(map[string]any{"machines": machines})
 }
 
 func (s *Server) getMachine(ctx context.Context, req *mcpsdk.CallToolRequest, in getMachineArgs) (*mcpsdk.CallToolResult, any, error) {
@@ -275,7 +280,11 @@ func (s *Server) listEvents(ctx context.Context, req *mcpsdk.CallToolRequest, in
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 	}
-	return jsonToolResult(*resp.JSON200)
+	page := *resp.JSON200
+	if page.Events == nil {
+		page.Events = []controlapi.MachineEvent{}
+	}
+	return jsonToolResult(page)
 }
 
 func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequest, in manageAgentTokensArgs) (*mcpsdk.CallToolResult, any, error) {
@@ -293,7 +302,12 @@ func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequ
 		if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 			return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
 		}
-		return jsonToolResult(*resp.JSON200)
+		// MCP structuredContent must be a JSON object (never a top-level array).
+		tokens := *resp.JSON200
+		if tokens == nil {
+			tokens = controlapi.ListAgentTokens200JSONResponse{}
+		}
+		return jsonToolResult(map[string]any{"tokens": tokens})
 	case "create":
 		if err := requireNonEmpty("name", in.Name); err != nil {
 			return nil, nil, err
@@ -330,9 +344,29 @@ func jsonToolResult(v any) (*mcpsdk.CallToolResult, any, error) {
 	if err != nil {
 		return nil, nil, &ToolError{Code: "internal_error", Message: "encode failed"}
 	}
+	// CallToolResult.structuredContent MUST be a JSON object (MCP spec / SEP-1860).
+	if !jsonObjectPayload(b) {
+		return nil, nil, &ToolError{Code: "internal_error", Message: "structured content must be a JSON object"}
+	}
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(b)}},
 	}, v, nil
+}
+
+// jsonObjectPayload reports whether raw is a JSON object (leading '{'),
+// skipping insignificant whitespace. Arrays/primitives/null are rejected.
+func jsonObjectPayload(raw []byte) bool {
+	for _, c := range raw {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func mapResponseStatus(status int, body []byte, httpResp *http.Response, knownSecrets ...string) error {

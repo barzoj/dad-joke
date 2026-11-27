@@ -135,7 +135,14 @@ for c in (result.get("content") or []):
     break
 if not text:
   raise SystemExit("empty list_machines content")
-machines=json.loads(text)
+payload=json.loads(text)
+# MCP structuredContent / content text is an object: {"machines":[...]}
+machines=payload.get("machines") if isinstance(payload, dict) else payload
+if not isinstance(machines, list):
+  raise SystemExit(f"list_machines expected machines array, got {type(machines).__name__}")
+sc=result.get("structuredContent")
+if sc is not None and not isinstance(sc, dict):
+  raise SystemExit(f"structuredContent must be object, got {type(sc).__name__}")
 if not any(m.get("machine_id")==mid or m.get("id")==mid for m in machines):
   # MachineSummary uses machine_id
   ids=[m.get("machine_id") or m.get("id") for m in machines]

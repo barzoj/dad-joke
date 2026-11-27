@@ -118,12 +118,41 @@ func decodeToolJSON(t *testing.T, res *mcpsdk.CallToolResult) any {
 	if res.IsError {
 		t.Fatalf("tool error: %s", toolText(t, res))
 	}
+	assertStructuredContentIsObject(t, res)
 	text := toolText(t, res)
 	var v any
 	if err := json.Unmarshal([]byte(text), &v); err != nil {
 		t.Fatalf("decode: %v body=%s", err, text)
 	}
 	return v
+}
+
+func assertStructuredContentIsObject(t *testing.T, res *mcpsdk.CallToolResult) {
+	t.Helper()
+	if res == nil {
+		t.Fatal("nil CallToolResult")
+	}
+	if res.IsError {
+		if res.StructuredContent == nil {
+			return
+		}
+	} else if res.StructuredContent == nil {
+		t.Fatal("successful tool call missing StructuredContent object")
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal StructuredContent: %v", err)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("StructuredContent token: %v raw=%s", err, raw)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		t.Fatalf("StructuredContent must be a JSON object, got %s", raw)
+	}
 }
 
 func postMCPRaw(t *testing.T, url string, headers map[string]string, body string) (int, []byte) {
@@ -339,10 +368,10 @@ func TestMCP_CrossTenantIsolation(t *testing.T) {
 	}
 
 	sessionB := mcpConnect(t, base, patB, "")
-	listB := decodeToolJSON(t, callTool(t, sessionB, "list_machines", nil))
-	arr, _ := listB.([]any)
+	listB := decodeToolJSON(t, callTool(t, sessionB, "list_machines", nil)).(map[string]any)
+	arr, _ := listB["machines"].([]any)
 	if len(arr) != 0 {
-		t.Fatalf("tenant B saw machines: %v", arr)
+		t.Fatalf("tenant B saw machines: %v", listB)
 	}
 
 	res := callTool(t, sessionB, "get_machine", map[string]any{"machine_id": machineID})
@@ -363,8 +392,9 @@ func TestMCP_CrossTenantIsolation(t *testing.T) {
 	}
 	assertNoSecret(t, toolText(t, res), patA, patB, agentTok)
 
-	listA := decodeToolJSON(t, callTool(t, sessionA, "list_machines", nil)).([]any)
-	if len(listA) != 1 {
+	listA := decodeToolJSON(t, callTool(t, sessionA, "list_machines", nil)).(map[string]any)
+	arrA, _ := listA["machines"].([]any)
+	if len(arrA) != 1 {
 		t.Fatalf("tenant A machines = %v", listA)
 	}
 }
