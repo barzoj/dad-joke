@@ -6,8 +6,11 @@ import (
 )
 
 // awaitWaitGroup waits for wg up to timeout. On expiry it runs onTimeout
-// (typically closing pipe readers) and then waits for wg to finish.
-// Returns whether the wait completed before the timeout.
+// (typically closing pipe readers) and waits again up to timeout for wg to
+// finish. If the second wait also expires, it returns without blocking further
+// so callers (job result POST) cannot stall forever when Close does not unblock
+// a stuck pipe reader.
+// Returns whether the wait completed before the first timeout.
 func awaitWaitGroup(wg *sync.WaitGroup, timeout time.Duration, onTimeout func()) (finishedCleanly bool) {
 	done := make(chan struct{})
 	go func() {
@@ -27,7 +30,12 @@ func awaitWaitGroup(wg *sync.WaitGroup, timeout time.Duration, onTimeout func())
 		if onTimeout != nil {
 			onTimeout()
 		}
-		<-done
-		return false
+		timer.Reset(timeout)
+		select {
+		case <-done:
+			return false
+		case <-timer.C:
+			return false
+		}
 	}
 }
