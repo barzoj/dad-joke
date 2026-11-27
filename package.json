@@ -1,0 +1,16 @@
+{
+  "name": "dad-joke-api",
+  "private": true,
+  "description": "TypeSpec sources for AgentAPI and ControlAPI contracts",
+  "scripts": {
+    "generate:typespec": "npm run generate:typespec:agent && npm run generate:typespec:control",
+    "generate:typespec:agent": "tsp compile api/agent",
+    "generate:typespec:control": "tsp compile api/control"
+  },
+  "devDependencies": {
+    "@typespec/compiler": "1.18.0",
+    "@typespec/http": "1.18.0",
+    "@typespec/openapi": "1.18.0",
+    "@typespec/openapi3": "1.18.0"
+  }
+}

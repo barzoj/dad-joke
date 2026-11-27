@@ -40,6 +40,23 @@ Every boundary is an explicit, **versioned** contract defined **before** impleme
 
 Contracts are the source of truth for compatibility and review. Implementations follow the contract; they do not invent ad-hoc cross-layer coupling.
 
+### HTTP contract pipeline (TypeSpec → OpenAPI → Go)
+
+Two independent HTTP APIs are defined as separate TypeSpec `@service` packages and never hand-spliced:
+
+| Service | TypeSpec | Generated OpenAPI 3.0.0 | Generated Go package |
+| --- | --- | --- | --- |
+| **AgentAPI** | `api/agent` | `gen/openapi/agent/openapi.yaml` | `gen/go/agentapi` |
+| **ControlAPI** | `api/control` | `gen/openapi/control/openapi.yaml` | `gen/go/controlapi` |
+
+Pipeline (single entry point: `make generate`):
+
+1. **TypeSpec** (`@typespec/openapi3`) emits OpenAPI **3.0.0** YAML per service (`warn-as-error`, `operation-id-strategy: explicit-only`, `omit-unreachable-types`).
+2. **`oapi-codegen` v2** (`go tool oapi-codegen`, configs under `api/oapi-codegen/`) generates `models`, `client`, `std-http-server`, and `strict-server` into the Go packages above (`resolve-type-name-collisions: true`).
+3. **`gen/` is gitignored**; CI runs codegen before any job that compiles packages importing `gen/go/...`.
+
+Both APIs currently expose **`GET /healthz`** (JSON `{ "status": "ok" }`) to prove the compile chain end-to-end. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
+
 ## Engineering Principles
 
 | Principle | Meaning |
@@ -51,4 +68,4 @@ Contracts are the source of truth for compatibility and review. Implementations 
 
 ## Independent Review & CI
 
-Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (Windows test/build, Linux race+coverage with an `internal/` floor, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).
+Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (API generate + race test/vet, Windows test/build, Linux race+coverage with an `internal/` floor excluding `gen/`, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).

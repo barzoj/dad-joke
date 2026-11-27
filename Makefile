@@ -9,7 +9,14 @@ RELEASE_API_URL ?= https://api.github.com/repos/barzoj/dad-joke/releases/latest
 
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).ReleaseAPIURL=$(RELEASE_API_URL)
 
-.PHONY: test cover build build-windows vet
+.PHONY: test cover build build-windows vet generate
+
+# TypeSpec → OpenAPI 3.0.0 → oapi-codegen. Output under gen/ (gitignored).
+generate:
+	npm ci
+	npm run generate:typespec
+	mkdir -p gen/go/agentapi gen/go/controlapi
+	go generate ./api
 
 test:
 	CGO_ENABLED=0 go test ./...

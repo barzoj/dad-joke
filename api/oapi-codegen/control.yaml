@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/v2.9.0/configuration-schema.json
+package: controlapi
+generate:
+  models: true
+  client: true
+  std-http-server: true
+  strict-server: true
+# Paths are relative to api/ (cwd when `go generate ./api` runs).
+output: ../gen/go/controlapi/controlapi.gen.go
+output-options:
+  resolve-type-name-collisions: true

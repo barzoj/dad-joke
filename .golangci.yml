@@ -35,6 +35,7 @@ linters:
     generated: lax
     paths:
       - dist
+      - gen
 
 issues:
   max-issues-per-linter: 0
