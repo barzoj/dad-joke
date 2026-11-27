@@ -2,6 +2,7 @@ package winscm
 
 import (
 	"fmt"
+	"syscall"
 	"testing"
 )
 
@@ -55,5 +56,13 @@ func TestIsBenignStopError(t *testing.T) {
 	}
 	if IsBenignStopError(ErrAlreadyRunning) {
 		t.Fatal("already-running is not a stop error")
+	}
+	// 1055 is ERROR_SERVICE_DATABASE_LOCKED — must never be treated as benign.
+	const errDatabaseLocked syscall.Errno = 1055
+	if IsBenignStopError(errDatabaseLocked) {
+		t.Fatal("ERROR_SERVICE_DATABASE_LOCKED (1055) must not be benign")
+	}
+	if IsAlreadyRunning(errDatabaseLocked) {
+		t.Fatal("ERROR_SERVICE_DATABASE_LOCKED (1055) must not match already-running")
 	}
 }

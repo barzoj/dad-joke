@@ -23,9 +23,9 @@ const (
 
 // Win32 errors relevant to idempotent Start/Stop.
 const (
-	ErrAlreadyRunning     syscall.Errno = 1056 // ERROR_SERVICE_ALREADY_RUNNING
-	ErrCannotAcceptCtrl   syscall.Errno = 1055 // ERROR_SERVICE_CANNOT_ACCEPT_CTRL
-	ErrServiceNotActive   syscall.Errno = 1062 // ERROR_SERVICE_NOT_ACTIVE
+	ErrAlreadyRunning   syscall.Errno = 1056 // ERROR_SERVICE_ALREADY_RUNNING
+	ErrCannotAcceptCtrl syscall.Errno = 1061 // ERROR_SERVICE_CANNOT_ACCEPT_CTRL
+	ErrServiceNotActive syscall.Errno = 1062 // ERROR_SERVICE_NOT_ACTIVE
 )
 
 // StartPlan is how StartService should proceed after Query.
