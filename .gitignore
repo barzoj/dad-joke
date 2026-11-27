@@ -4,6 +4,10 @@
 /dad-joke-windows-amd64.exe
 /dist/
 
+# Generated API artifacts (TypeSpec → OpenAPI → oapi-codegen)
+/gen/
+/node_modules/
+
 # IDE / OS
 .idea/
 .vscode/

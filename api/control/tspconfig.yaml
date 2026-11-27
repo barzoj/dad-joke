@@ -1,0 +1,12 @@
+warn-as-error: true
+emit:
+  - "@typespec/openapi3"
+options:
+  "@typespec/openapi3":
+    emitter-output-dir: "{project-root}/../../gen/openapi/control"
+    output-file: openapi.yaml
+    file-type: yaml
+    openapi-versions:
+      - "3.0.0"
+    operation-id-strategy: explicit-only
+    omit-unreachable-types: true
