@@ -70,8 +70,9 @@ def aggregate(blocks: Iterable[Block]) -> tuple[int, int]:
 
 
 def percent(covered: int, stmts: int) -> float:
+    # Zero statements is not "100% covered" — callers treat stmts==0 as a gate failure.
     if stmts == 0:
-        return 100.0
+        return 0.0
     return 100.0 * covered / stmts
 
 
@@ -108,7 +109,9 @@ def match_changed_file(changed: str, profile_files: Iterable[str]) -> str | None
         return None
     for profile in profile_files:
         p = normalize_path(profile)
-        if p.endswith("/" + changed_n) or p.endswith(changed_n) or p == changed_n:
+        # Require a path boundary before the suffix so foointernal/... cannot match
+        # a changed path of internal/...
+        if p == changed_n or p.endswith("/" + changed_n):
             return profile
     return None
 
@@ -201,14 +204,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    blocks = filter_blocks(parse_profile(args.profile))
+    try:
+        blocks = filter_blocks(parse_profile(args.profile))
+    except ValueError as exc:
+        print(f"coverage error: {exc}", file=sys.stderr)
+        return 1
+
     total_covered, total_stmts = aggregate(blocks)
     internal_blocks = [b for b in blocks if is_internal_path(b.file)]
     internal_covered, internal_stmts = aggregate(internal_blocks)
 
     total_pct = percent(total_covered, total_stmts)
     internal_pct = percent(internal_covered, internal_stmts)
-    threshold_ok = internal_pct + 1e-9 >= args.internal_min
+    if internal_stmts == 0:
+        threshold_ok = False
+        print(
+            "coverage error: no internal/ statements in coverprofile "
+            "(empty, mode-only, or gen/-only profile); refusing to treat as 100%",
+            file=sys.stderr,
+        )
+    else:
+        threshold_ok = internal_pct + 1e-9 >= args.internal_min
 
     by_file = file_coverage(blocks)
     changed = read_changed_files(args.changed_files, args.changed)
@@ -218,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         matched = match_changed_file(rel, by_file.keys())
         if matched is None:
+            # Missing from the profile: deleted, Windows-only, or never instrumented.
             changed_rows.append((rel, "n/a"))
             continue
         c, s = by_file[matched]

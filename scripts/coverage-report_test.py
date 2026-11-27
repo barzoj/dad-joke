@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -26,6 +28,11 @@ class CoverageReportTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = load_module()
 
+    def _write_profile(self, root: Path, body: str) -> Path:
+        cov = root / "coverage.out"
+        cov.write_text(body, encoding="utf-8")
+        return cov
+
     def test_filters_gen_and_computes_internal(self) -> None:
         profile = "\n".join(
             [
@@ -39,8 +46,7 @@ class CoverageReportTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cov = root / "coverage.out"
-            cov.write_text(profile, encoding="utf-8")
+            cov = self._write_profile(root, profile)
             summary = root / "summary.md"
             comment = root / "comment.md"
             badge = root / "badge.json"
@@ -88,12 +94,115 @@ class CoverageReportTest(unittest.TestCase):
             ]
         )
         with tempfile.TemporaryDirectory() as tmp:
-            cov = Path(tmp) / "coverage.out"
-            cov.write_text(profile, encoding="utf-8")
-            rc = self.mod.main(
-                ["--profile", str(cov), "--internal-min", "70"]
-            )
+            cov = self._write_profile(Path(tmp), profile)
+            rc = self.mod.main(["--profile", str(cov), "--internal-min", "70"])
             self.assertEqual(rc, 1)
+
+    def test_empty_changed_files_non_go_pr(self) -> None:
+        profile = "\n".join(
+            [
+                "mode: atomic",
+                "github.com/barzoj/dad-joke/internal/cli/cli.go:1.1,2.2 10 1",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cov = self._write_profile(root, profile)
+            changed = root / "changed.txt"
+            # Empty list / non-Go PR: only README (ignored) and blank lines.
+            changed.write_text("\nREADME.md\ndocs/ARCHITECTURE.md\n", encoding="utf-8")
+            comment = root / "comment.md"
+            rc = self.mod.main(
+                [
+                    "--profile",
+                    str(cov),
+                    "--internal-min",
+                    "70",
+                    "--comment",
+                    str(comment),
+                    "--changed-files",
+                    str(changed),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            text = comment.read_text(encoding="utf-8")
+            self.assertIn("No changed `.go` files", text)
+            self.assertNotIn("| `README.md`", text)
+
+    def test_mode_only_profile_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cov = self._write_profile(root, "mode: atomic\n")
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = self.mod.main(["--profile", str(cov), "--internal-min", "70"])
+            self.assertEqual(rc, 1)
+            self.assertIn("no internal/ statements", err.getvalue())
+
+    def test_empty_profile_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cov = self._write_profile(Path(tmp), "")
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = self.mod.main(["--profile", str(cov), "--internal-min", "70"])
+            self.assertEqual(rc, 1)
+            self.assertIn("empty coverage profile", err.getvalue())
+
+    def test_path_suffix_trap_does_not_match(self) -> None:
+        profile_files = [
+            "github.com/barzoj/dad-joke/foointernal/cli/cli.go",
+            "github.com/barzoj/dad-joke/internal/cli/cli.go",
+        ]
+        matched = self.mod.match_changed_file("internal/cli/cli.go", profile_files)
+        self.assertEqual(matched, "github.com/barzoj/dad-joke/internal/cli/cli.go")
+
+        # Only the trap path present: must not match.
+        matched_trap = self.mod.match_changed_file(
+            "internal/cli/cli.go",
+            ["github.com/barzoj/dad-joke/foointernal/cli/cli.go"],
+        )
+        self.assertIsNone(matched_trap)
+
+        # endswith(changed_n) would have been True for the trap; boundary check is False.
+        trap = "github.com/barzoj/dad-joke/foointernal/cli/cli.go"
+        self.assertTrue(trap.endswith("internal/cli/cli.go"))
+        self.assertFalse(trap.endswith("/internal/cli/cli.go"))
+
+    def test_deleted_file_shows_na(self) -> None:
+        profile = "\n".join(
+            [
+                "mode: atomic",
+                "github.com/barzoj/dad-joke/internal/cli/cli.go:1.1,2.2 10 1",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cov = self._write_profile(root, profile)
+            changed = root / "changed.txt"
+            # Deleted (or never-built) Go file still listed in the PR diff.
+            changed.write_text(
+                "internal/cli/cli.go\ninternal/removed/gone.go\n",
+                encoding="utf-8",
+            )
+            comment = root / "comment.md"
+            rc = self.mod.main(
+                [
+                    "--profile",
+                    str(cov),
+                    "--internal-min",
+                    "70",
+                    "--comment",
+                    str(comment),
+                    "--changed-files",
+                    str(changed),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            text = comment.read_text(encoding="utf-8")
+            self.assertIn("| `internal/cli/cli.go` | 100.0% |", text)
+            self.assertIn("| `internal/removed/gone.go` | n/a |", text)
 
 
 if __name__ == "__main__":
