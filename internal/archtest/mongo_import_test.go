@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/barzoj/dad-joke/internal/archtest"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -36,7 +37,7 @@ func TestMongoDriverImportIsolation(t *testing.T) {
 		if pkg.PkgPath == "" {
 			continue
 		}
-		if isMongoStorePackage(pkg.PkgPath) {
+		if archtest.IsMongoStorePackage(pkg.PkgPath) {
 			continue
 		}
 		for imp := range pkg.Imports {
@@ -45,9 +46,4 @@ func TestMongoDriverImportIsolation(t *testing.T) {
 			}
 		}
 	}
-}
-
-func isMongoStorePackage(pkgPath string) bool {
-	return strings.HasSuffix(pkgPath, "/internal/store/mongo") ||
-		strings.HasSuffix(pkgPath, "/internal/store/mongo_test")
 }

@@ -96,6 +96,16 @@ func TestRun_DuplicateTenant(t *testing.T) {
 	}
 }
 
+func TestRun_AuditAppendFailure(t *testing.T) {
+	t.Parallel()
+	base := memory.New()
+	st := &auditFailStore{Store: base, err: errors.New("audit write failed")}
+	_, err := bootstrap.Run(context.Background(), st, "audit-fail")
+	if err == nil || !strings.Contains(err.Error(), "audit append") {
+		t.Fatalf("err = %v, want audit append failure", err)
+	}
+}
+
 func TestPrintRawKey(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -105,4 +115,24 @@ func TestPrintRawKey(t *testing.T) {
 	if got := buf.String(); got != "dj_pat_abc\n" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// auditFailStore wraps a Store and fails AuditStore.Append.
+type auditFailStore struct {
+	store.Store
+	err error
+}
+
+func (s *auditFailStore) Audits() store.AuditStore {
+	return auditFailAudits{err: s.err}
+}
+
+type auditFailAudits struct{ err error }
+
+func (a auditFailAudits) Append(context.Context, *store.AuditEntry) error {
+	return a.err
+}
+
+func (a auditFailAudits) ListByTenant(context.Context, string, int) ([]store.AuditEntry, error) {
+	return nil, a.err
 }
