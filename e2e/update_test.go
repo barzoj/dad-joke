@@ -164,7 +164,9 @@ func writeUpdateConfig(t *testing.T, releaseURL string, pollSeconds int) {
 	}
 	machineID := "550e8400-e29b-41d4-a716-446655440000"
 	token := strings.Repeat("ab", 32)
-	// Preserve identity when overriding poll settings after install.
+	backendURL := ""
+	heartbeatSeconds := 60
+	// Preserve identity / backend settings when overriding poll settings after install.
 	if raw, err := os.ReadFile(configPath); err == nil {
 		var existing map[string]any
 		if json.Unmarshal(raw, &existing) == nil {
@@ -174,6 +176,12 @@ func writeUpdateConfig(t *testing.T, releaseURL string, pollSeconds int) {
 			if v, ok := existing["token"].(string); ok && v != "" {
 				token = v
 			}
+			if v, ok := existing["backend_url"].(string); ok {
+				backendURL = v
+			}
+			if v, ok := existing["heartbeat_interval_seconds"].(float64); ok && int(v) >= 1 {
+				heartbeatSeconds = int(v)
+			}
 		}
 	}
 	body := fmt.Sprintf(`{
@@ -181,9 +189,11 @@ func writeUpdateConfig(t *testing.T, releaseURL string, pollSeconds int) {
   "release_api_url": %q,
   "poll_interval_seconds": %d,
   "machine_id": %q,
-  "token": %q
+  "token": %q,
+  "backend_url": %q,
+  "heartbeat_interval_seconds": %d
 }
-`, releaseURL, pollSeconds, machineID, token)
+`, releaseURL, pollSeconds, machineID, token, backendURL, heartbeatSeconds)
 	if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

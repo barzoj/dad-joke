@@ -25,6 +25,7 @@ import (
 
 	"github.com/barzoj/dad-joke/internal/buildinfo"
 	"github.com/barzoj/dad-joke/internal/config"
+	"github.com/barzoj/dad-joke/internal/heartbeat"
 	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/service"
 	"github.com/barzoj/dad-joke/internal/updater"
@@ -59,7 +60,8 @@ const usageText = `Usage: dad-joke <command> [flags]
 
 Commands:
   version                 Print embedded build version and commit
-  install [--token SECRET] Install the DadJoke Windows Service (Administrator required)
+  install [flags]         Install the DadJoke Windows Service (Administrator required)
+                          [--token SECRET] [--backend-url URL] [--heartbeat-interval SECONDS]
   uninstall               Uninstall the DadJoke Windows Service (Administrator required)
   run                     Run as the DadJoke Windows Service
   apply-update            Apply a verified staged binary (internal helper)
@@ -79,7 +81,12 @@ func Run(args []string, deps Dependencies) int {
 		deps.Installer = installer.New()
 	}
 	if deps.Runner == nil {
-		deps.Runner = service.NewRunner(service.Options{Agent: updater.NewPoller()})
+		deps.Runner = service.NewRunner(service.Options{
+			Agent: service.Group{
+				updater.NewPoller(),
+				heartbeat.New(),
+			},
+		})
 	}
 	if deps.Applier == nil {
 		deps.Applier = &updater.Applier{
@@ -155,12 +162,35 @@ func parseInstallArgs(args []string) (installer.InstallOptions, error) {
 			i++
 			opts.TokenSet = true
 			opts.Token = args[i]
+		case "--backend-url":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--backend-url requires a value")
+			}
+			i++
+			opts.BackendURLSet = true
+			opts.BackendURL = args[i]
+		case "--heartbeat-interval":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--heartbeat-interval requires an integer")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return opts, fmt.Errorf("invalid --heartbeat-interval %q", args[i])
+			}
+			opts.HeartbeatIntervalSet = true
+			opts.HeartbeatIntervalSeconds = n
 		default:
 			return opts, fmt.Errorf("unexpected argument %q", a)
 		}
 	}
 	if opts.TokenSet {
 		if err := config.ValidateTokenArg(opts.Token); err != nil {
+			return opts, err
+		}
+	}
+	if opts.BackendURLSet {
+		if err := config.ValidateBackendURL(opts.BackendURL); err != nil {
 			return opts, err
 		}
 	}
