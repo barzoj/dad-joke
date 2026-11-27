@@ -409,6 +409,149 @@ func TestApiKeyCRUD(t *testing.T) {
 	}
 }
 
+func TestAuth_MissingBearerOnAgentAPI401(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	base := startTestServer(t, st, server.Config{})
+	hb, _ := json.Marshal(map[string]any{
+		"machine_id":             uuid.NewString(),
+		"agent_version":          "0.0.1",
+		"hostname":               "pc",
+		"os_version":             "Windows 11",
+		"applied_policy_version": 0,
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s", res.StatusCode, raw)
+	}
+	assertErrorResponse(t, raw)
+}
+
+func TestAuth_ExpiredToken401(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	tenantID, pat := seedTenantPAT(t, st, "expired-"+uuid.NewString()[:8])
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	raw, prefix, hash, err := tokenhash.Generate(store.TokenKindAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := &store.Token{
+		TenantID:  tenantID,
+		Kind:      store.TokenKindAgent,
+		Name:      "expired",
+		Prefix:    prefix,
+		Hash:      hash,
+		CreatedAt: past,
+		ExpiresAt: &past,
+	}
+	if err := st.Tokens().Create(context.Background(), tok); err != nil {
+		t.Fatal(err)
+	}
+
+	base := startTestServer(t, st, server.Config{Clock: func() time.Time { return now }})
+	hb, _ := json.Marshal(map[string]any{
+		"machine_id":             uuid.NewString(),
+		"agent_version":          "0.0.1",
+		"hostname":               "pc",
+		"os_version":             "Windows 11",
+		"applied_policy_version": 0,
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+raw)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired agent token: %d %s", res.StatusCode, body)
+	}
+	assertErrorResponse(t, body)
+
+	// Control PAT still works (sanity).
+	code, _, _ := doJSON(t, http.MethodGet, base+"/v1/api-keys", pat, nil)
+	if code != http.StatusOK {
+		t.Fatalf("pat status = %d", code)
+	}
+}
+
+func TestAuth_RepeatedRevokedToken429(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	_, pat := seedTenantPAT(t, st, "rev429-"+uuid.NewString()[:8])
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	authFail := ratelimit.New(ratelimit.Config{Window: time.Minute, MaxHits: 3, Clock: clock})
+	base := startTestServer(t, st, server.Config{
+		AuthFailureLimiter: authFail,
+		Clock:              clock,
+	})
+
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/agent-tokens", pat, map[string]any{"name": "soon-revoked"})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	code, _, body = doJSON(t, http.MethodDelete, base+"/v1/agent-tokens/"+created.ID, pat, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", code, body)
+	}
+
+	hb, _ := json.Marshal(map[string]any{
+		"machine_id":             uuid.NewString(),
+		"agent_version":          "0.0.1",
+		"hostname":               "pc",
+		"os_version":             "Windows 11",
+		"applied_policy_version": 0,
+	})
+	var saw429 bool
+	var retryAfter string
+	for i := 0; i < 6; i++ {
+		req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+created.Token)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode == http.StatusTooManyRequests {
+			saw429 = true
+			retryAfter = res.Header.Get("Retry-After")
+			assertErrorResponse(t, raw)
+			break
+		}
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("iter %d: status=%d body=%s", i, res.StatusCode, raw)
+		}
+	}
+	if !saw429 {
+		t.Fatal("expected 429 after repeated revoked-token auth failures")
+	}
+	n, err := strconv.Atoi(retryAfter)
+	if err != nil || n < 1 {
+		t.Fatalf("Retry-After = %q", retryAfter)
+	}
+}
+
 func assertErrorResponse(t *testing.T, body []byte) {
 	t.Helper()
 	var er struct {

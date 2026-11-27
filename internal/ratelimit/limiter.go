@@ -92,11 +92,24 @@ func (l *Limiter) Record(key string) {
 
 // Allow records a hit when under the limit. Returns ok=false with Retry-After when
 // the key is already exhausted (the rejected attempt is not recorded again).
+// Check and record happen under a single lock so concurrent callers cannot overshoot.
 func (l *Limiter) Allow(key string) (retryAfter time.Duration, ok bool) {
-	if retry, exceeded := l.Exceeded(key); exceeded {
-		return retry, false
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clock().UTC()
+	b := l.buckets[key]
+	if b == nil {
+		if len(l.buckets) >= l.maxKeys {
+			l.evictOneLocked(now)
+		}
+		b = &bucket{}
+		l.buckets[key] = b
 	}
-	l.Record(key)
+	l.pruneLocked(b, now)
+	if len(b.hits) >= l.maxHits {
+		return retryAfterFrom(b.hits[0], now, l.window), false
+	}
+	b.hits = append(b.hits, now)
 	return 0, true
 }
 

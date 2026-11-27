@@ -1,0 +1,34 @@
+# Keep the build context lean. Do NOT exclude sources needed for codegen
+# (api/, package.json, package-lock.json, go.mod, go.sum, cmd/, internal/).
+
+.git
+.github
+.gitignore
+.dockerignore
+
+# Local binaries and IDE junk
+/dad-joke
+/dad-joke.exe
+/dad-joke-windows-amd64.exe
+/server
+/dist/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Host-generated artifacts (rebuilt inside the image)
+/gen/
+/node_modules/
+
+# Tests / coverage / docs not needed to compile the server
+coverage.out
+scripts/__pycache__/
+*.test
+e2e/
+docs/
+README.md
+SECURITY.md
+AGENTS.md
+LICENSE
+renovate.json

@@ -72,6 +72,33 @@ func TestLimiter_Allow(t *testing.T) {
 	}
 }
 
+func TestLimiter_AllowAtomicNoOvershoot(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	l := ratelimit.New(ratelimit.Config{
+		Window:  time.Minute,
+		MaxHits: 10,
+		Clock:   func() time.Time { return now },
+	})
+	const workers = 50
+	done := make(chan bool, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			_, ok := l.Allow("shared")
+			done <- ok
+		}()
+	}
+	allowed := 0
+	for i := 0; i < workers; i++ {
+		if <-done {
+			allowed++
+		}
+	}
+	if allowed != 10 {
+		t.Fatalf("allowed = %d, want 10 (no overshoot under concurrency)", allowed)
+	}
+}
+
 func TestLimiter_EvictsWhenFull(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)

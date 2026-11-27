@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -14,11 +15,11 @@ import (
 
 // AuthConfig configures bearer auth + rate limits.
 type AuthConfig struct {
-	Store          store.Store
-	AuthFailures   *ratelimit.Limiter // per-IP (and per-token-hash) auth failures
-	Mutations      *ratelimit.Limiter // per-token mutating requests
-	Clock          func() time.Time
-	SkipPaths      map[string]struct{} // paths that skip auth (e.g. /healthz)
+	Store        store.Store
+	AuthFailures *ratelimit.Limiter // per-IP (and per-kind+hash) auth failures
+	Mutations    *ratelimit.Limiter // per-token mutating requests
+	Clock        func() time.Time
+	SkipPaths    map[string]struct{} // paths that skip auth (e.g. /healthz)
 }
 
 // Authenticator verifies dj_agt_ / dj_pat_ bearer credentials.
@@ -59,7 +60,7 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 
 			raw, ok := bearerToken(r)
 			if !ok {
-				a.recordAuthFailure(failKey, "")
+				a.recordAuthFailure(failKey)
 				if a.authFailureLimited(w, reqID, failKey) {
 					return
 				}
@@ -69,7 +70,20 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 
 			kind := tokenhash.KindOf(raw)
 			hash := tokenhash.Hash(raw)
-			hashFailKey := "authfail:hash:" + hash
+			// Namespace hash buckets by wantKind so a wrong-prefix probe on one API
+			// cannot poison the other API's hash rate-limit bucket.
+			hashFailKey := "authfail:hash:" + string(wantKind) + ":" + hash
+
+			if kind != wantKind {
+				// Wrong prefix: charge IP only. Do not touch the hash bucket —
+				// that credential is legitimate on the other API surface.
+				a.recordAuthFailure(failKey)
+				if a.authFailureLimited(w, reqID, failKey) {
+					return
+				}
+				writeUnauthorized(w, reqID)
+				return
+			}
 
 			if a.cfg.AuthFailures != nil {
 				if retry, exceeded := a.cfg.AuthFailures.Exceeded(hashFailKey); exceeded {
@@ -78,17 +92,21 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 				}
 			}
 
-			if kind != wantKind {
-				a.recordAuthFailure(failKey, hashFailKey)
-				if a.authFailureLimited(w, reqID, failKey) || a.authFailureLimited(w, reqID, hashFailKey) {
+			tok, err := a.cfg.Store.Tokens().GetByHash(r.Context(), wantKind, hash)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					a.recordAuthFailure(failKey, hashFailKey)
+					if a.authFailureLimited(w, reqID, failKey) || a.authFailureLimited(w, reqID, hashFailKey) {
+						return
+					}
+					writeUnauthorized(w, reqID)
 					return
 				}
-				writeUnauthorized(w, reqID)
+				// Store/infra blip: fail closed without burning auth-failure budget.
+				writeServiceUnavailable(w, reqID)
 				return
 			}
-
-			tok, err := a.cfg.Store.Tokens().GetByHash(r.Context(), wantKind, hash)
-			if err != nil || tok == nil || !tokenhash.EqualHash(tok.Hash, raw) || !tokenUsable(tok, a.cfg.Clock().UTC()) {
+			if tok == nil || !tokenhash.EqualHash(tok.Hash, raw) || !tokenUsable(tok, a.cfg.Clock().UTC()) {
 				a.recordAuthFailure(failKey, hashFailKey)
 				if a.authFailureLimited(w, reqID, failKey) || a.authFailureLimited(w, reqID, hashFailKey) {
 					return

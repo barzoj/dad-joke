@@ -40,6 +40,10 @@ func writeUnauthorized(w http.ResponseWriter, reqID string) {
 	writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", reqID)
 }
 
+func writeServiceUnavailable(w http.ResponseWriter, reqID string) {
+	writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "authentication backend unavailable", reqID)
+}
+
 func writeTooManyRequests(w http.ResponseWriter, reqID string, retryAfter time.Duration) {
 	secs := int(retryAfter / time.Second)
 	if secs < 1 {
