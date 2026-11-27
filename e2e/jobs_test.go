@@ -393,6 +393,7 @@ func TestTC14_HeartbeatAndUpdaterDuringJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Older tag than the agent so polls happen without an apply/restart mid-job.
 	release.SetRelease("v0.0.0", exeBytes, nil)
 
 	jobID := "44444444-4444-4444-8444-444444444444"
@@ -401,13 +402,16 @@ func TestTC14_HeartbeatAndUpdaterDuringJob(t *testing.T) {
 		Payload:        `Start-Sleep -Seconds 12; Write-Output 'done'`,
 		TimeoutSeconds: 60,
 	})
-	mock.SetPending(jobID)
 
+	// Install first, then configure the updater and restart *before* enqueueing.
+	// Restarting after claim would kill the suspended/running job and clear
+	// pending_job_ids on the mock, so no result would ever be posted.
 	installWithJobsBackend(t, bin, token, mock.URL())
 	writeUpdateConfig(t, release.LatestURL(), 2)
-	// Restart service so updater picks up new poll interval / release URL.
 	mustPowershell(t, fmt.Sprintf(`Restart-Service -Name '%s' -Force`, serviceName))
 	waitServiceState(t, "Running", 60*time.Second)
+
+	mock.SetPending(jobID)
 
 	hbBefore := mock.Heartbeats()
 	pollsBefore := len(release.Polls())
