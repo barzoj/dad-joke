@@ -51,4 +51,4 @@ Contracts are the source of truth for compatibility and review. Implementations 
 
 ## Independent Review & CI
 
-Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (including the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).
+Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (Windows test/build, Linux race+coverage with an `internal/` floor, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).
