@@ -13,23 +13,9 @@ import (
 	"github.com/barzoj/dad-joke/gen/go/controlapi"
 )
 
-// agentHealth implements agentapi.StrictServerInterface for /healthz.
-type agentHealth struct{}
-
-func (agentHealth) GetHealthz(context.Context, agentapi.GetHealthzRequestObject) (agentapi.GetHealthzResponseObject, error) {
-	return agentapi.GetHealthz200JSONResponse{Status: agentapi.Ok}, nil
-}
-
-// controlHealth implements controlapi.StrictServerInterface for /healthz.
-type controlHealth struct{}
-
-func (controlHealth) GetHealthz(context.Context, controlapi.GetHealthzRequestObject) (controlapi.GetHealthzResponseObject, error) {
-	return controlapi.GetHealthz200JSONResponse{Status: controlapi.Ok}, nil
-}
-
 func TestAgentAPI_Healthz_EndToEnd(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(agentapi.Handler(agentapi.NewStrictHandler(agentHealth{}, nil)))
+	srv := httptest.NewServer(agentapi.Handler(agentapi.NewStrictHandler(agentStub{}, nil)))
 	t.Cleanup(srv.Close)
 
 	client, err := agentapi.NewClientWithResponses(srv.URL)
@@ -97,7 +83,7 @@ func TestAgentAPI_Healthz_EndToEnd(t *testing.T) {
 
 func TestControlAPI_Healthz_EndToEnd(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(controlapi.Handler(controlapi.NewStrictHandler(controlHealth{}, nil)))
+	srv := httptest.NewServer(controlapi.Handler(controlapi.NewStrictHandler(controlStub{}, nil)))
 	t.Cleanup(srv.Close)
 
 	client, err := controlapi.NewClientWithResponses(srv.URL)

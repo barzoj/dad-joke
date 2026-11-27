@@ -55,7 +55,18 @@ Pipeline (single entry point: `make generate`):
 2. **`oapi-codegen` v2** (`go tool oapi-codegen`, configs under `api/oapi-codegen/`) generates `models`, `client`, `std-http-server`, and `strict-server` into the Go packages above (`resolve-type-name-collisions: true`).
 3. **`gen/` is gitignored**; CI runs codegen before any job that compiles packages importing `gen/go/...`.
 
-Both APIs currently expose **`GET /healthz`** (JSON `{ "status": "ok" }`) to prove the compile chain end-to-end. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
+Shared error shapes live in `api/common/errors.tsp` and are imported by both services (native TypeSpec imports only; the two OpenAPI YAML documents stay independent).
+
+### Auth, tokens, heartbeat, and machines (current contracts)
+
+| Surface | Security | Notable routes |
+| --- | --- | --- |
+| **AgentAPI** | `AgentBearerAuth` (HTTP Bearer `dj_agt_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST /v1/heartbeat` — machine identity + applied policy; response includes `server_time`, `desired_policy_version`, `pending_job_ids` |
+| **ControlAPI** | `ControlBearerAuth` (HTTP Bearer `dj_pat_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST/GET/DELETE /v1/agent-tokens`, `POST/GET/DELETE /v1/api-keys`, `GET /v1/machines`, `GET /v1/machines/{machine_id}` |
+
+Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400` / `401` / `403` / `404` / `409` / `413` / `429` / `500`. `429` responses declare a `Retry-After` header.
+
+Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, `CreatedApiKey`) and are absent from every `GET` summary/list model. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
 
 ## Engineering Principles
 

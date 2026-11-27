@@ -16,7 +16,7 @@ Therefore the product assumes the network and backends are hostile unless crypto
 | Invariant | Requirement |
 | --- | --- |
 | Tenant isolation | Every persisted record and API decision is scoped by `tenant_id`. Cross-tenant reads/writes are impossible (return not-found, never leak existence across tenants). |
-| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane credentials use `dj_pat_`. Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. |
+| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane credentials use `dj_pat_`. Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. See [Token formats](#token-formats-dj_agt--dj_pat_) below. |
 | Transport | Outbound agent/control HTTPS uses system CA verification. Cleartext is rejected except loopback test doubles. |
 | Job containment | Remote jobs have short TTLs, run inside a Windows Job Object with hard timeouts, and truncate stdout/stderr (output caps). |
 | Audit | Sensitive actions append to append-only `audit_logs` (token issue/revoke, policy mutations, job launch/result). |
@@ -26,6 +26,22 @@ Therefore the product assumes the network and backends are hostile unless crypto
 | Secure SDLC | Every change is gated by SAST and dependency vulnerability scanning in CI (CodeQL, gosec, govulncheck, golangci-lint). |
 
 Parent-key signing of commands/policies is an additional invariant for future control-plane ↔ agent contracts: unsigned or unverifiable directives must not be applied once that control exists.
+
+## Token formats (`dj_agt_` / `dj_pat_`)
+
+HTTP contracts freeze a clear role split and Secret Scanning–friendly prefixes:
+
+| Prefix | Issued by | Used on | Entropy | Role |
+| --- | --- | --- | --- | --- |
+| `dj_agt_` | ControlAPI `POST /v1/agent-tokens` | AgentAPI (`AgentBearerAuth`) | **256-bit** opaque secret after the prefix | On-device agent ↔ control plane |
+| `dj_pat_` | ControlAPI `POST /v1/api-keys` | ControlAPI (`ControlBearerAuth`), MCP, automation | **256-bit** opaque secret after the prefix | Parent/operator control plane |
+
+Rules that bind every implementation of these contracts:
+
+- Unique prefixes keep agent and control credentials non-interchangeable and detectable by secret-scanning patterns.
+- The **raw secret** is returned exactly once in the `201 Created` response (`CreatedAgentToken` / `CreatedApiKey`) and is **absent** from every `GET` list/summary model.
+- At rest: store **SHA-256 hashes only**; compare in constant time; never log the raw value or write it to audit payloads.
+- `GET /healthz` on both APIs remains unauthenticated; all `/v1/...` routes require the matching bearer scheme.
 
 ## Already implemented (`v0.0.x`)
 
@@ -37,13 +53,14 @@ These controls exist in the current Windows agent / repository:
 - **Cryptographic update verification** — staged `dad-joke-windows-amd64.exe` must match the published `.sha256` sidecar before apply.
 - **Apply path allowlist** — `apply-update` may only replace the installed binary from a staging path under `ProgramData\DadJoke\updates\...`.
 - **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), `golangci-lint`, Renovate config validation, and Dependency Review (high/critical CVEs + AGPL-incompatible licenses) on PRs/`main`/weekly as applicable.
+- **HTTP auth/token/heartbeat/machine contracts** — TypeSpec `AgentBearerAuth` / `ControlBearerAuth`, agent-token and API-key CRUD shapes (raw secret only on `201 Created`), `POST /v1/heartbeat`, and machine listing; unified `ErrorResponse` including `429` + `Retry-After`.
 
 ## Invariant contracts (enforced as components land)
 
 The following are **binding design contracts**. New packages must implement them when the corresponding surface appears; they are not optional backlog ideas:
 
 - Strict `tenant_id` isolation across AgentAPI, ControlAPI, and storage.
-- Prefixed tokens (`dj_agt_` / `dj_pat_`), hashed at rest, never logged.
+- Prefixed tokens (`dj_agt_` / `dj_pat_`), hashed at rest, never logged (HTTP shapes frozen in TypeSpec; see above).
 - Append-only `audit_logs` for sensitive operations.
 - Per-IP / per-token rate limits on auth failures and mutations.
 - Short job TTLs, Windows Job Object kill-on-timeout, and output caps for remote script execution.
