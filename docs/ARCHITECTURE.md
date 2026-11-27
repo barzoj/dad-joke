@@ -84,13 +84,19 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
 
 ### `cmd/server`
 
-- HTTP skeleton with `GET /healthz`: `200` + `{"status":"ok"}` when MongoDB `Ping` succeeds; `503` + `{"status":"unavailable"}` when it fails.
+- HTTP server with `GET /healthz`: `200` + `{"status":"ok"}` when MongoDB `Ping` succeeds; `503` + `{"status":"unavailable"}` when it fails. Unauthenticated by design.
+- **Zero-Trust auth middleware** (process-local):
+  - AgentAPI routes (`POST /v1/heartbeat`): `Authorization: Bearer dj_agt_...` only; SHA-256 verified via `TokenStore.GetByHash` with constant-time compare; revoked/expired/wrong-prefix → `401` `ErrorResponse`.
+  - ControlAPI routes (`/v1/agent-tokens`, `/v1/api-keys`, `/v1/machines`): `Authorization: Bearer dj_pat_...` only; same verification; cross-prefix tokens → `401`.
+  - Successful auth puts `tenant_id` and `token_id` on `context.Context` (`internal/authctx`); handlers are strictly tenant-scoped (cross-tenant → `404`).
+- **Token CRUD** (ControlAPI): create/list/delete agent tokens and API keys. Raw secret returned only on `201 Created`; at rest only SHA-256 hash + non-secret prefix. Issue and revoke append to `audit_logs` (`internal/audit`; hooks also exist for policy create / script launch).
+- **Rate limits** (`internal/ratelimit`): in-memory sliding window per process (no Redis), injectable clock, bounded key set. Auth failures are limited per IP and per `wantKind`+token-hash (wrong-prefix probes charge IP only, so they cannot poison the other API's hash bucket). Mutating requests are limited per token id. Exhaustion returns `429` + `Retry-After`. DAL/infra errors from token lookup return `503` without burning auth-failure budget.
 - Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`), strict server timeouts, `http.MaxBytesReader` body limit, graceful shutdown on `SIGINT`/`SIGTERM`.
 - `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.
 
 ### Hardened container (dev)
 
-Multi-stage `Dockerfile` produces a static Linux binary in `gcr.io/distroless/static-debian12:nonroot`. Dev `docker-compose.yml` runs `server` (non-root, `read_only: true`, `no-new-privileges`, `cap_drop: ALL`) with MongoDB (`--wiredTigerCacheSizeGB` capped). CI scans the image with Trivy (`HIGH`/`CRITICAL`). Production compose/Caddy/backups are not part of this surface.
+Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + static compile, then `gcr.io/distroless/static-debian12:nonroot` (final image has no Node/Go toolchain). Works from a fresh checkout because `gen/` is gitignored and rebuilt in-image. Dev `docker-compose.yml` runs `server` (non-root, `read_only: true`, `no-new-privileges`, `cap_drop: ALL`) with MongoDB (`--wiredTigerCacheSizeGB` capped). CI scans the image with Trivy (`HIGH`/`CRITICAL`). Production compose/Caddy/backups are not part of this repository.
 
 ## Engineering Principles
 

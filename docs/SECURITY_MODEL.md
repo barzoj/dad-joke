@@ -55,17 +55,18 @@ These controls exist in the current Windows agent / repository:
 - **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), `golangci-lint`, Renovate config validation, and Dependency Review (high/critical CVEs + AGPL-incompatible licenses) on PRs/`main`/weekly as applicable.
 - **HTTP auth/token/heartbeat/machine contracts** — TypeSpec `AgentBearerAuth` / `ControlBearerAuth`, agent-token and API-key CRUD shapes (raw secret only on `201 Created`), `POST /v1/heartbeat`, and machine listing; unified `ErrorResponse` including `429` + `Retry-After`.
 - **Server DAL + bootstrap** — `internal/store` domain interfaces with MongoDB isolated in `internal/store/mongo`; `bootstrap` stores SHA-256 hashes only for `dj_pat_...` keys; hardened non-root distroless container + Trivy image scan in CI.
+- **Zero-Trust HTTP auth** — middleware enforces prefix split (`dj_agt_` vs `dj_pat_`), SHA-256 + constant-time verify via DAL, tenant/token context injection, immediate revoke → `401`, cross-tenant token ops → `404`, append-only `audit_logs` for token issue/revoke (with policy/script audit hooks), and in-memory per-IP / per-token rate limits returning `429` + `Retry-After`.
 
 ## Invariant contracts (enforced as components land)
 
 The following are **binding design contracts**. New packages must implement them when the corresponding surface appears; they are not optional backlog ideas:
 
-- Strict `tenant_id` isolation across AgentAPI, ControlAPI, and storage.
-- Prefixed tokens (`dj_agt_` / `dj_pat_`), hashed at rest, never logged (HTTP shapes frozen in TypeSpec; see above).
-- Append-only `audit_logs` for sensitive operations.
-- Per-IP / per-token rate limits on auth failures and mutations.
+- Strict `tenant_id` isolation across AgentAPI, ControlAPI, and storage (**implemented** for auth + token CRUD + machine reads).
+- Prefixed tokens (`dj_agt_` / `dj_pat_`), hashed at rest, never logged (**implemented** in HTTP middleware + DAL).
+- Append-only `audit_logs` for sensitive operations (**implemented** for token issue/revoke; hooks ready for policy/script).
+- Per-IP / per-token rate limits on auth failures and mutations (**implemented**, process-local).
 - Short job TTLs, Windows Job Object kill-on-timeout, and output caps for remote script execution.
-- Non-root hardened server container image.
-- Fail-closed authn/authz on every new HTTP surface.
+- Non-root hardened server container image (**implemented** for the server image).
+- Fail-closed authn/authz on every new HTTP surface (**implemented** for current `/v1/...` routes; `/healthz` remains unauthenticated).
 
 Until a contract’s owning component exists, the invariant still constrains design reviews and API contracts so a later backend cannot quietly widen the botnet blast radius.

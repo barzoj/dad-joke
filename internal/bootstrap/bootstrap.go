@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barzoj/dad-joke/internal/audit"
 	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/barzoj/dad-joke/internal/tokenhash"
 )
@@ -54,14 +55,8 @@ func Run(ctx context.Context, s store.Store, tenantName string) (*Result, error)
 		return nil, fmt.Errorf("bootstrap: create token: %w", err)
 	}
 
-	if err := s.Audits().Append(ctx, &store.AuditEntry{
-		TenantID:  ten.ID,
-		Action:    "token.issue",
-		ActorID:   "bootstrap",
-		Resource:  "token:" + tok.ID,
-		Details:   map[string]string{"kind": string(store.TokenKindPAT), "prefix": prefix, "name": tok.Name},
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
+	aud := audit.Logger{Store: s.Audits()}
+	if err := aud.TokenIssue(ctx, ten.ID, "bootstrap", tok.ID, store.TokenKindPAT, prefix, tok.Name); err != nil {
 		return nil, fmt.Errorf("bootstrap: audit append: %w", err)
 	}
 
