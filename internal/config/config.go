@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/barzoj/dad-joke/internal/buildinfo"
@@ -136,6 +137,11 @@ func MarshalJSONBytes(c Config) ([]byte, error) {
 
 // LoadFile reads and validates config.json from path.
 func LoadFile(path string) (Config, error) {
+	path = filepath.Clean(path)
+	if path == "." || path == "" {
+		return Config{}, fmt.Errorf("%w: empty config path", ErrInvalid)
+	}
+	// #nosec G304 -- path is filepath.Clean'd; production callers use ProgramData\DadJoke\config.json
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err

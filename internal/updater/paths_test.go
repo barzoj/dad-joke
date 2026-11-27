@@ -68,10 +68,12 @@ func TestValidateApplyPathsRejectsTraversalAndArbitrary(t *testing.T) {
 
 func TestWindowsCleanTraversal(t *testing.T) {
 	t.Parallel()
-	_, err := windowsClean(`C:\ProgramData\DadJoke\updates\..\..\Windows\System32`)
+	gotEscape, err := windowsClean(`C:\ProgramData\DadJoke\updates\..\..\Windows\System32`)
 	if err != nil {
-		// cleaned path may succeed if .. doesn't escape drive root incorrectly
-		// Ensure cleaned result is not under updates if used as staged parent.
+		t.Fatalf("unexpected error cleaning escaped updates path: %v", err)
+	}
+	if strings.Contains(strings.ToLower(gotEscape), `\updates\`) {
+		t.Fatalf("escaped path unexpectedly still under updates: %q", gotEscape)
 	}
 	got, err := windowsClean(`C:\ProgramData\DadJoke\updates\a\..\b\file.exe`)
 	if err != nil {

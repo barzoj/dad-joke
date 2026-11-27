@@ -360,7 +360,7 @@ func TestACLAppliedBeforeConfigWrite(t *testing.T) {
 	if dirIdx < 0 || cfgWriteIdx < 0 || cfgACLIdx < 0 {
 		t.Fatalf("missing steps in order: %v", h.order)
 	}
-	if !(dirIdx < cfgWriteIdx && cfgWriteIdx < cfgACLIdx) {
+	if dirIdx >= cfgWriteIdx || cfgWriteIdx >= cfgACLIdx {
 		t.Fatalf("expected ACL(dir) < write(config) < ACL(config); order=%v", h.order)
 	}
 }
