@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -22,6 +23,9 @@ import (
 //
 // Processes are created with CREATE_SUSPENDED, assigned to the job, then
 // resumed — so no grandchild can spawn before job membership is established.
+// Stdio handles are inherited only via PROC_THREAD_ATTRIBUTE_HANDLE_LIST so a
+// LocalSystem service never duplicates arbitrary inheritable handles into the
+// remote script process.
 type JobObjectExecutor struct{}
 
 // Run implements Executor.
@@ -56,14 +60,29 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 		return ExecResult{}, fmt.Errorf("jobs: stderr pipe: %w", err)
 	}
 
-	// Child must inherit the write ends; parent keeps non-inheritable read ends.
-	if err := windows.SetHandleInformation(windows.Handle(stdoutW.Fd()), windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+	stdoutRH := windows.Handle(stdoutR.Fd())
+	stdoutWH := windows.Handle(stdoutW.Fd())
+	stderrRH := windows.Handle(stderrR.Fd())
+	stderrWH := windows.Handle(stderrW.Fd())
+
+	// os.Pipe marks both ends inheritable on Windows — clear inherit on the
+	// parent read ends so the child never sees them.
+	if err := windows.SetHandleInformation(stdoutRH, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
 		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
-		return ExecResult{}, fmt.Errorf("jobs: stdout inherit: %w", err)
+		return ExecResult{}, fmt.Errorf("jobs: clear stdoutR inherit: %w", err)
 	}
-	if err := windows.SetHandleInformation(windows.Handle(stderrW.Fd()), windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+	if err := windows.SetHandleInformation(stderrRH, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
 		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
-		return ExecResult{}, fmt.Errorf("jobs: stderr inherit: %w", err)
+		return ExecResult{}, fmt.Errorf("jobs: clear stderrR inherit: %w", err)
+	}
+	// Write ends must be inheritable for STARTF_USESTDHANDLES + handle list.
+	if err := windows.SetHandleInformation(stdoutWH, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
+		return ExecResult{}, fmt.Errorf("jobs: stdoutW inherit: %w", err)
+	}
+	if err := windows.SetHandleInformation(stderrWH, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
+		return ExecResult{}, fmt.Errorf("jobs: stderrW inherit: %w", err)
 	}
 
 	nul, err := openNUL()
@@ -85,12 +104,34 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 		}
 	}()
 
-	var si windows.StartupInfo
-	si.Cb = uint32(unsafe.Sizeof(si))
-	si.Flags = windows.STARTF_USESTDHANDLES
-	si.StdInput = nul
-	si.StdOutput = windows.Handle(stdoutW.Fd())
-	si.StdErr = windows.Handle(stderrW.Fd())
+	attrList, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
+		return ExecResult{}, fmt.Errorf("jobs: NewProcThreadAttributeList: %w", err)
+	}
+	defer attrList.Delete()
+
+	// Explicit allowlist: only NUL + stdout/stderr write ends enter the child.
+	handles := []windows.Handle{nul, stdoutWH, stderrWH}
+	if err := attrList.Update(
+		windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+		unsafe.Pointer(&handles[0]),
+		uintptr(len(handles))*unsafe.Sizeof(handles[0]),
+	); err != nil {
+		closeFiles(stdoutR, stdoutW, stderrR, stderrW)
+		return ExecResult{}, fmt.Errorf("jobs: UpdateProcThreadAttribute: %w", err)
+	}
+
+	si := &windows.StartupInfoEx{
+		StartupInfo: windows.StartupInfo{
+			Cb:        uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
+			Flags:     windows.STARTF_USESTDHANDLES,
+			StdInput:  nul,
+			StdOutput: stdoutWH,
+			StdErr:    stderrWH,
+		},
+		ProcThreadAttributeList: attrList.List(),
+	}
 
 	appName, err := windows.UTF16PtrFromString(exe)
 	if err != nil {
@@ -104,20 +145,27 @@ func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeo
 	}
 
 	var pi windows.ProcessInformation
-	flags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_UNICODE_ENVIRONMENT)
+	flags := uint32(
+		windows.CREATE_SUSPENDED |
+			windows.CREATE_NEW_PROCESS_GROUP |
+			windows.CREATE_UNICODE_ENVIRONMENT |
+			windows.EXTENDED_STARTUPINFO_PRESENT,
+	)
 	// #nosec G204 -- payload is an authorized remote job from the control plane
 	err = windows.CreateProcess(
 		appName,
 		cmdLine,
 		nil,
 		nil,
-		true, // inherit pipe write ends
+		true, // required with PROC_THREAD_ATTRIBUTE_HANDLE_LIST; list restricts what is inherited
 		flags,
 		nil,
 		nil,
-		&si,
+		&si.StartupInfo,
 		&pi,
 	)
+	runtime.KeepAlive(handles)
+	runtime.KeepAlive(attrList)
 	// Parent must close write ends so readers see EOF when the child exits.
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -254,17 +302,25 @@ func openNUL() (windows.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
+	var sa windows.SecurityAttributes
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	sa.InheritHandle = 1
 	h, err := windows.CreateFile(
 		name,
 		windows.GENERIC_READ,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-		nil,
+		&sa,
 		windows.OPEN_EXISTING,
 		0,
 		0,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: open NUL: %w", err)
+	}
+	// Belt-and-suspenders: ensure inherit bit is set for STARTF_USESTDHANDLES.
+	if err := windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		_ = windows.CloseHandle(h)
+		return 0, fmt.Errorf("jobs: NUL inherit: %w", err)
 	}
 	return h, nil
 }
