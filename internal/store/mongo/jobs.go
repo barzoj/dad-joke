@@ -18,6 +18,12 @@ func (j jobStore) Create(ctx context.Context, job *store.Job) error {
 	if job == nil || job.TenantID == "" || job.MachineID == "" {
 		return store.ErrInvalid
 	}
+	if job.ExpiresAt.IsZero() {
+		return store.ErrInvalid
+	}
+	if len(job.Payload) > store.JobIOMaxBytes {
+		return store.ErrInvalid
+	}
 	cp := *job
 	if cp.ID == "" {
 		cp.ID = uuid.NewString()
@@ -28,6 +34,7 @@ func (j jobStore) Create(ctx context.Context, job *store.Job) error {
 	if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = time.Now().UTC()
 	}
+	cp.ExpiresAt = cp.ExpiresAt.UTC()
 	_, err := j.s.coll(collJobs).InsertOne(ctx, jobToDoc(&cp))
 	if err != nil {
 		return mapWriteError(err)
@@ -55,7 +62,7 @@ func (j jobStore) ListByMachine(ctx context.Context, tenantID, machineID string)
 	cur, err := j.s.coll(collJobs).Find(ctx, bson.D{
 		{Key: "tenant_id", Value: tenantID},
 		{Key: "machine_id", Value: machineID},
-	}, options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
+	}, options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}))
 	if err != nil {
 		return nil, err
 	}
@@ -73,39 +80,71 @@ func (j jobStore) ListByMachine(ctx context.Context, tenantID, machineID string)
 }
 
 func (j jobStore) Claim(ctx context.Context, tenantID, machineID, id string, at time.Time) (*store.Job, error) {
+	at = at.UTC()
 	res := j.s.coll(collJobs).FindOneAndUpdate(ctx,
 		bson.D{
 			{Key: "_id", Value: id},
 			{Key: "tenant_id", Value: tenantID},
 			{Key: "machine_id", Value: machineID},
 			{Key: "status", Value: string(store.JobPending)},
+			{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: at}}},
 		},
 		bson.D{{Key: "$set", Value: bson.D{
 			{Key: "status", Value: string(store.JobRunning)},
-			{Key: "claimed_at", Value: at.UTC()},
+			{Key: "claimed_at", Value: at},
 		}}},
 		options.FindOneAndUpdate().SetReturnDocument(options.After),
 	)
 	var d jobDoc
-	if err := res.Decode(&d); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			// Distinguish missing vs already claimed.
-			_, getErr := j.Get(ctx, tenantID, id)
-			if errors.Is(getErr, store.ErrNotFound) {
-				return nil, store.ErrNotFound
-			}
-			return nil, store.ErrConflict
-		}
+	if err := res.Decode(&d); err == nil {
+		return jobFromDoc(d), nil
+	} else if !errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, err
 	}
-	return jobFromDoc(d), nil
+
+	job, getErr := j.Get(ctx, tenantID, id)
+	if errors.Is(getErr, store.ErrNotFound) {
+		return nil, store.ErrNotFound
+	}
+	if getErr != nil {
+		return nil, getErr
+	}
+	if job.MachineID != machineID {
+		return nil, store.ErrNotFound
+	}
+	if job.Status == store.JobPending && !job.ExpiresAt.After(at) {
+		if _, err := j.s.coll(collJobs).UpdateOne(ctx,
+			bson.D{
+				{Key: "_id", Value: id},
+				{Key: "tenant_id", Value: tenantID},
+				{Key: "status", Value: string(store.JobPending)},
+			},
+			bson.D{{Key: "$set", Value: bson.D{
+				{Key: "status", Value: string(store.JobTimedOut)},
+				{Key: "finished_at", Value: at},
+			}}},
+		); err != nil {
+			return nil, err
+		}
+		return nil, store.ErrConflict
+	}
+	return nil, store.ErrConflict
 }
 
-func (j jobStore) Complete(ctx context.Context, tenantID, id string, result store.JobResult) error {
+func (j jobStore) Complete(ctx context.Context, tenantID, machineID, id string, result store.JobResult) error {
+	if len(result.Stdout) > store.JobIOMaxBytes || len(result.Stderr) > store.JobIOMaxBytes {
+		return store.ErrInvalid
+	}
+	switch result.Status {
+	case store.JobSucceeded, store.JobFailed:
+	default:
+		return store.ErrInvalid
+	}
 	res, err := j.s.coll(collJobs).UpdateOne(ctx,
 		bson.D{
 			{Key: "_id", Value: id},
 			{Key: "tenant_id", Value: tenantID},
+			{Key: "machine_id", Value: machineID},
 			{Key: "status", Value: string(store.JobRunning)},
 		},
 		bson.D{{Key: "$set", Value: bson.D{
@@ -121,8 +160,14 @@ func (j jobStore) Complete(ctx context.Context, tenantID, id string, result stor
 		return err
 	}
 	if res.MatchedCount == 0 {
-		_, getErr := j.Get(ctx, tenantID, id)
+		job, getErr := j.Get(ctx, tenantID, id)
 		if errors.Is(getErr, store.ErrNotFound) {
+			return store.ErrNotFound
+		}
+		if getErr != nil {
+			return getErr
+		}
+		if job.MachineID != machineID {
 			return store.ErrNotFound
 		}
 		return store.ErrConflict
@@ -156,11 +201,29 @@ func (j jobStore) Cancel(ctx context.Context, tenantID, id string, at time.Time)
 }
 
 func (j jobStore) ListPendingIDs(ctx context.Context, tenantID, machineID string, now time.Time) ([]string, error) {
+	now = now.UTC()
+	// Transition expired pending jobs for this machine to timed_out.
+	_, err := j.s.coll(collJobs).UpdateMany(ctx,
+		bson.D{
+			{Key: "tenant_id", Value: tenantID},
+			{Key: "machine_id", Value: machineID},
+			{Key: "status", Value: string(store.JobPending)},
+			{Key: "expires_at", Value: bson.D{{Key: "$lte", Value: now}}},
+		},
+		bson.D{{Key: "$set", Value: bson.D{
+			{Key: "status", Value: string(store.JobTimedOut)},
+			{Key: "finished_at", Value: now},
+		}}},
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	cur, err := j.s.coll(collJobs).Find(ctx, bson.D{
 		{Key: "tenant_id", Value: tenantID},
 		{Key: "machine_id", Value: machineID},
 		{Key: "status", Value: string(store.JobPending)},
-		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: now.UTC()}}},
+		{Key: "expires_at", Value: bson.D{{Key: "$gt", Value: now}}},
 	}, options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}).SetSort(bson.D{{Key: "created_at", Value: 1}}))
 	if err != nil {
 		return nil, err

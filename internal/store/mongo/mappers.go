@@ -232,7 +232,7 @@ type jobDoc struct {
 	MachineID  string     `bson:"machine_id"`
 	Status     string     `bson:"status"`
 	Payload    string     `bson:"payload"`
-	ExitCode   *int       `bson:"exit_code,omitempty"`
+	ExitCode   *int32     `bson:"exit_code,omitempty"`
 	Stdout     string     `bson:"stdout,omitempty"`
 	Stderr     string     `bson:"stderr,omitempty"`
 	DurationMS *int64     `bson:"duration_ms,omitempty"`

@@ -468,6 +468,12 @@ func (j jobStore) Create(_ context.Context, job *store.Job) error {
 	if job == nil || job.TenantID == "" || job.MachineID == "" {
 		return store.ErrInvalid
 	}
+	if job.ExpiresAt.IsZero() {
+		return store.ErrInvalid
+	}
+	if len(job.Payload) > store.JobIOMaxBytes {
+		return store.ErrInvalid
+	}
 	j.s.mu.Lock()
 	defer j.s.mu.Unlock()
 	cp := *job
@@ -480,6 +486,7 @@ func (j jobStore) Create(_ context.Context, job *store.Job) error {
 	if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = time.Now().UTC()
 	}
+	cp.ExpiresAt = cp.ExpiresAt.UTC()
 	if _, ok := j.s.jobs[cp.ID]; ok {
 		return store.ErrConflict
 	}
@@ -508,6 +515,12 @@ func (j jobStore) ListByMachine(_ context.Context, tenantID, machineID string) (
 			out = append(out, job)
 		}
 	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].CreatedAt.Equal(out[k].CreatedAt) {
+			return out[i].ID < out[k].ID
+		}
+		return out[i].CreatedAt.Before(out[k].CreatedAt)
+	})
 	return out, nil
 }
 
@@ -517,6 +530,13 @@ func (j jobStore) Claim(_ context.Context, tenantID, machineID, id string, at ti
 	job, ok := j.s.jobs[id]
 	if !ok || job.TenantID != tenantID || job.MachineID != machineID {
 		return nil, store.ErrNotFound
+	}
+	at = at.UTC()
+	if job.Status == store.JobPending && !job.ExpiresAt.After(at) {
+		job.Status = store.JobTimedOut
+		job.FinishedAt = &at
+		j.s.jobs[id] = job
+		return nil, store.ErrConflict
 	}
 	if job.Status != store.JobPending {
 		return nil, store.ErrConflict
@@ -528,22 +548,30 @@ func (j jobStore) Claim(_ context.Context, tenantID, machineID, id string, at ti
 	return &cp, nil
 }
 
-func (j jobStore) Complete(_ context.Context, tenantID, id string, result store.JobResult) error {
+func (j jobStore) Complete(_ context.Context, tenantID, machineID, id string, result store.JobResult) error {
 	j.s.mu.Lock()
 	defer j.s.mu.Unlock()
 	job, ok := j.s.jobs[id]
-	if !ok || job.TenantID != tenantID {
+	if !ok || job.TenantID != tenantID || job.MachineID != machineID {
 		return store.ErrNotFound
 	}
 	if job.Status != store.JobRunning {
 		return store.ErrConflict
+	}
+	if len(result.Stdout) > store.JobIOMaxBytes || len(result.Stderr) > store.JobIOMaxBytes {
+		return store.ErrInvalid
+	}
+	switch result.Status {
+	case store.JobSucceeded, store.JobFailed:
+	default:
+		return store.ErrInvalid
 	}
 	job.Status = result.Status
 	job.ExitCode = result.ExitCode
 	job.Stdout = result.Stdout
 	job.Stderr = result.Stderr
 	job.DurationMS = result.DurationMS
-	fin := result.FinishedAt
+	fin := result.FinishedAt.UTC()
 	job.FinishedAt = &fin
 	j.s.jobs[id] = job
 	return nil
@@ -559,6 +587,7 @@ func (j jobStore) Cancel(_ context.Context, tenantID, id string, at time.Time) e
 	if job.Status != store.JobPending {
 		return store.ErrConflict
 	}
+	at = at.UTC()
 	job.Status = store.JobCanceled
 	job.FinishedAt = &at
 	j.s.jobs[id] = job
@@ -568,11 +597,20 @@ func (j jobStore) Cancel(_ context.Context, tenantID, id string, at time.Time) e
 func (j jobStore) ListPendingIDs(_ context.Context, tenantID, machineID string, now time.Time) ([]string, error) {
 	j.s.mu.Lock()
 	defer j.s.mu.Unlock()
+	now = now.UTC()
 	out := make([]string, 0)
-	for _, job := range j.s.jobs {
-		if job.TenantID == tenantID && job.MachineID == machineID && job.Status == store.JobPending && job.ExpiresAt.After(now) {
-			out = append(out, job.ID)
+	for id, job := range j.s.jobs {
+		if job.TenantID != tenantID || job.MachineID != machineID || job.Status != store.JobPending {
+			continue
 		}
+		if !job.ExpiresAt.After(now) {
+			job.Status = store.JobTimedOut
+			fin := now
+			job.FinishedAt = &fin
+			j.s.jobs[id] = job
+			continue
+		}
+		out = append(out, job.ID)
 	}
 	sort.Strings(out)
 	return out, nil

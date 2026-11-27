@@ -126,15 +126,16 @@ func New(cfg Config) (*Server, error) {
 		Clock:        clock,
 	})
 
+	auditLogger := audit.Logger{Store: cfg.Store.Audits(), Clock: clock}
 	control := &ControlAPI{
 		Store:         cfg.Store,
-		Audit:         audit.Logger{Store: cfg.Store.Audits(), Clock: clock},
+		Audit:         auditLogger,
 		Clock:         clock,
 		AllowSignup:   allowSignup,
 		CookieSecure:  cookieSecure,
 		LoginFailures: loginFail,
 	}
-	agent := &AgentAPI{Store: cfg.Store, Clock: clock}
+	agent := &AgentAPI{Store: cfg.Store, Audit: auditLogger, Clock: clock}
 
 	root := http.NewServeMux()
 	s := &Server{cfg: cfg, logger: logger}
@@ -164,6 +165,10 @@ func New(cfg Config) (*Server, error) {
 
 	root.Handle("/v1/heartbeat", agentHandler)
 	root.Handle("/v1/policy", agentHandler)
+	// Agent claim/result share the /v1/jobs prefix with ControlAPI get/cancel;
+	// method+path patterns keep agent auth on these mutating agent endpoints.
+	root.Handle("POST /v1/jobs/{id}/claim", agentHandler)
+	root.Handle("POST /v1/jobs/{id}/result", agentHandler)
 	root.Handle("/v1/", controlHandler)
 
 	handler := securityHeaders(limitBody(root, maxRequestBytes))

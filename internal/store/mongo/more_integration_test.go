@@ -76,9 +76,9 @@ func TestIntegration_UsersPoliciesJobsEvents(t *testing.T) {
 	if _, err := st.Jobs().Claim(ctx, ten.ID, machineID, job.ID, time.Now().UTC()); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("second claim: %v", err)
 	}
-	code := 0
+	code := int32(0)
 	dur := int64(3)
-	if err := st.Jobs().Complete(ctx, ten.ID, job.ID, store.JobResult{
+	if err := st.Jobs().Complete(ctx, ten.ID, machineID, job.ID, store.JobResult{
 		Status: store.JobSucceeded, ExitCode: &code, Stdout: "hi", DurationMS: &dur, FinishedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
@@ -199,6 +199,13 @@ func TestIntegration_ListPendingIDsExcludesExpired(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0] != alive.ID {
 		t.Fatalf("pending = %#v, want only %q", pending, alive.ID)
+	}
+	got, err := st.Jobs().Get(ctx, ten.ID, expired.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.JobTimedOut {
+		t.Fatalf("expired status = %s, want timed_out", got.Status)
 	}
 }
 

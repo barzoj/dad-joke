@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
 using TypeSpec.Http;
@@ -490,5 +491,73 @@ interface Machines {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: MachinePolicy;
+  } | StandardErrors;
+
+  /**
+   * Enqueue a one-shot command/script job for a machine.
+   * `payload` is hard-capped at 64 KiB; oversized → 413/400.
+   * `expires_at` is mandatory (TTL for unclaimed jobs).
+   * Successful create appends an audit_logs entry and is visible immediately
+   * via AgentAPI `POST /v1/heartbeat` (`pending_job_ids`).
+   */
+  @post
+  @route("{machine_id}/jobs")
+  @operationId("createMachineJob")
+  op createJob(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string,
+    @body body: CreateJobRequest
+  ): {
+    @statusCode _: 201;
+    @header contentType: "application/json";
+    @body body: Job;
+  } | StandardErrors;
+
+  /**
+   * List jobs for a machine (tenant-scoped). Empty list → `[]`.
+   */
+  @get
+  @route("{machine_id}/jobs")
+  @operationId("listMachineJobs")
+  op listJobs(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: Job[];
+  } | StandardErrors;
+}
+
+@route("/v1/jobs")
+interface Jobs {
+  /**
+   * Get a single job by id (tenant-scoped). Cross-tenant → 404.
+   */
+  @get
+  @route("{id}")
+  @operationId("getJob")
+  op get(
+    /** Job id. */
+    @path @format("uuid") id: string
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: Job;
+  } | StandardErrors;
+
+  /**
+   * Cancel a pending job (`pending → canceled`).
+   * Canceling running or terminal jobs → 409 Conflict (no silent overwrite).
+   * Cross-tenant → 404.
+   */
+  @post
+  @route("{id}/cancel")
+  @operationId("cancelJob")
+  op cancel(
+    /** Job id. */
+    @path @format("uuid") id: string
+  ): {
+    @statusCode _: 204;
   } | StandardErrors;
 }

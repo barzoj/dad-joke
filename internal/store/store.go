@@ -69,10 +69,13 @@ type PolicyStore interface {
 	Put(ctx context.Context, p *Policy, expectedVersion int32) error
 }
 
+// JobIOMaxBytes is the hard cap for job payload and result stdout/stderr.
+const JobIOMaxBytes = 64 * 1024
+
 // JobResult is the terminal outcome of a claimed job.
 type JobResult struct {
 	Status     JobStatus
-	ExitCode   *int
+	ExitCode   *int32
 	Stdout     string
 	Stderr     string
 	DurationMS *int64
@@ -84,9 +87,15 @@ type JobStore interface {
 	Create(ctx context.Context, j *Job) error
 	Get(ctx context.Context, tenantID, id string) (*Job, error)
 	ListByMachine(ctx context.Context, tenantID, machineID string) ([]Job, error)
+	// Claim atomically moves pending → running for (tenantID, machineID, id).
+	// Expired pending jobs transition to timed_out and return ErrConflict.
+	// Wrong machine or missing/cross-tenant jobs return ErrNotFound.
 	Claim(ctx context.Context, tenantID, machineID, id string, at time.Time) (*Job, error)
-	Complete(ctx context.Context, tenantID, id string, result JobResult) error
+	// Complete writes a terminal result for a running job owned by machineID.
+	Complete(ctx context.Context, tenantID, machineID, id string, result JobResult) error
 	Cancel(ctx context.Context, tenantID, id string, at time.Time) error
+	// ListPendingIDs returns non-expired pending job ids and transitions any
+	// expired pending jobs for the machine to timed_out.
 	ListPendingIDs(ctx context.Context, tenantID, machineID string, now time.Time) ([]string, error)
 }
 

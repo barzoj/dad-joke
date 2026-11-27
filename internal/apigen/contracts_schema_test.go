@@ -82,6 +82,18 @@ func TestOpenAPI_SeparateSecuritySchemes(t *testing.T) {
 	if !strings.Contains(controlText, "MachinePolicy:") || !strings.Contains(controlText, "PutMachinePolicyRequest:") {
 		t.Fatal("control OpenAPI missing MachinePolicy / PutMachinePolicyRequest schemas")
 	}
+	if !strings.Contains(agentText, "/v1/jobs/{id}/claim:") || !strings.Contains(agentText, "/v1/jobs/{id}/result:") {
+		t.Fatal("agent OpenAPI missing job claim/result routes")
+	}
+	if !strings.Contains(controlText, "/v1/machines/{machine_id}/jobs:") {
+		t.Fatal("control OpenAPI missing /v1/machines/{machine_id}/jobs")
+	}
+	if !strings.Contains(controlText, "/v1/jobs/{id}:") || !strings.Contains(controlText, "/v1/jobs/{id}/cancel:") {
+		t.Fatal("control OpenAPI missing job get/cancel routes")
+	}
+	if !strings.Contains(controlText, "CreateJobRequest:") || !strings.Contains(controlText, "Job:") {
+		t.Fatal("control OpenAPI missing Job / CreateJobRequest schemas")
+	}
 }
 
 func TestGoModels_RawTokenOnlyOnCreatedResponses(t *testing.T) {
