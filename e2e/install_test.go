@@ -336,7 +336,9 @@ func TestTC06_MachineIdentityPersistence(t *testing.T) {
 	cleanupInstall(t, bin)
 	t.Cleanup(func() { cleanupInstall(t, bin) })
 
-	pinNoSelfUpdate(t)
+	// Do not pinNoSelfUpdate here: that pre-creates config.json and makes a
+	// "fresh" install report token=(preserved). CI already bakes an unreachable
+	// ReleaseAPIURL into the e2e binary, so self-update is still disabled.
 	out, err := runAdmin(t, bin, "install")
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, out)
