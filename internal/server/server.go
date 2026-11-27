@@ -14,6 +14,7 @@ import (
 	"github.com/barzoj/dad-joke/gen/go/agentapi"
 	"github.com/barzoj/dad-joke/gen/go/controlapi"
 	"github.com/barzoj/dad-joke/internal/audit"
+	djmcp "github.com/barzoj/dad-joke/internal/mcp"
 	"github.com/barzoj/dad-joke/internal/ratelimit"
 	"github.com/barzoj/dad-joke/internal/store"
 )
@@ -173,6 +174,20 @@ func New(cfg Config) (*Server, error) {
 	root.Handle("POST /v1/jobs/{id}/result", agentHandler)
 	root.Handle("/v1/", controlHandler)
 
+	// MCP Streamable HTTP talks only through the generated ControlAPI client
+	// via an in-process RoundTripper (no DAL/DB imports in internal/mcp).
+	mcpHTTP := &http.Client{Transport: djmcp.HandlerRoundTripper{Handler: controlHandler}}
+	mcpClient, err := controlapi.NewClientWithResponses("http://control.invalid", controlapi.WithHTTPClient(mcpHTTP))
+	if err != nil {
+		return nil, fmt.Errorf("server: mcp control client: %w", err)
+	}
+	mcpSrv, err := djmcp.New(djmcp.Config{Client: mcpClient, Log: logger})
+	if err != nil {
+		return nil, fmt.Errorf("server: mcp: %w", err)
+	}
+	root.Handle("/mcp", mcpSrv.Handler())
+	root.Handle("/mcp/", mcpSrv.Handler())
+
 	handler := securityHeaders(limitBody(root, maxRequestBytes))
 	s.http = &http.Server{
 		Addr:              addr,
@@ -184,6 +199,12 @@ func New(cfg Config) (*Server, error) {
 		ErrorLog:          logger,
 	}
 	return s, nil
+}
+
+// Handler returns the root HTTP handler. Intended for in-process tests that
+// need to set RemoteAddr (e.g. MCP auth rate-limit isolation).
+func (s *Server) Handler() http.Handler {
+	return s.http.Handler
 }
 
 // Addr returns the bound address after Serve/ListenAndServe starts (best-effort).
