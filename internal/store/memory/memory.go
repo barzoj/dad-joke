@@ -625,14 +625,19 @@ func eventKey(tenantID, machineID, eventID string) string {
 func (e eventStore) InsertBatch(_ context.Context, events []store.Event) error {
 	e.s.mu.Lock()
 	defer e.s.mu.Unlock()
+	seen := make(map[string]struct{}, len(events))
 	for i := range events {
 		ev := events[i]
 		if ev.TenantID == "" || ev.MachineID == "" || ev.EventID == "" {
 			return store.ErrInvalid
 		}
 		key := eventKey(ev.TenantID, ev.MachineID, ev.EventID)
+		if _, ok := seen[key]; ok {
+			continue // within-batch idempotent skip
+		}
+		seen[key] = struct{}{}
 		if _, ok := e.s.events[key]; ok {
-			continue // idempotent
+			continue // across-batch idempotent skip
 		}
 		if ev.ID == "" {
 			ev.ID = uuid.NewString()
@@ -643,9 +648,20 @@ func (e eventStore) InsertBatch(_ context.Context, events []store.Event) error {
 	return nil
 }
 
-func (e eventStore) List(_ context.Context, q store.EventQuery) ([]store.Event, error) {
+func (e eventStore) List(_ context.Context, q store.EventQuery) (store.EventPage, error) {
 	e.s.mu.Lock()
 	defer e.s.mu.Unlock()
+
+	var cursorTS time.Time
+	var cursorEventID string
+	if q.Cursor != "" {
+		ts, id, err := store.DecodeEventCursor(q.Cursor)
+		if err != nil {
+			return store.EventPage{}, err
+		}
+		cursorTS, cursorEventID = ts, id
+	}
+
 	out := make([]store.Event, 0)
 	for _, ev := range e.s.events {
 		if ev.TenantID != q.TenantID || ev.MachineID != q.MachineID {
@@ -660,13 +676,26 @@ func (e eventStore) List(_ context.Context, q store.EventQuery) ([]store.Event, 
 		if q.To != nil && !ev.TS.Before(*q.To) {
 			continue
 		}
+		if q.Cursor != "" && !store.EventAfterCursor(ev, cursorTS, cursorEventID) {
+			continue
+		}
 		out = append(out, ev)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TS.Before(out[j].TS) })
-	if q.Limit > 0 && len(out) > q.Limit {
-		out = out[:q.Limit]
+	sort.Slice(out, func(i, j int) bool {
+		return store.CompareEvents(out[i], out[j]) < 0
+	})
+
+	limit := q.Limit
+	if limit <= 0 {
+		limit = store.EventListDefaultLimit
 	}
-	return out, nil
+	page := store.EventPage{Events: out}
+	if len(out) > limit {
+		last := out[limit-1]
+		page.Events = out[:limit]
+		page.NextCursor = store.EncodeEventCursor(last.TS, last.EventID)
+	}
+	return page, nil
 }
 
 type auditStore struct{ s *Store }

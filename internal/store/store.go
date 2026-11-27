@@ -99,7 +99,20 @@ type JobStore interface {
 	ListPendingIDs(ctx context.Context, tenantID, machineID string, now time.Time) ([]string, error)
 }
 
+// Event ingest / listing hard limits (mirrored in api/common/events.tsp).
+const (
+	EventBatchMaxCount    = 100
+	EventBatchMaxBytes    = 256 * 1024
+	EventMaxFutureSkew    = 5 * time.Minute
+	EventListDefaultLimit = 50
+	EventListMinLimit     = 1
+	EventListMaxLimit     = 100
+	EventTTLSeconds       = 30 * 24 * 60 * 60 // 30 days
+)
+
 // EventQuery filters control-plane event reads.
+// Results are ordered by ts ascending, then event_id ascending (tie-breaker).
+// Cursor resumes strictly after the encoded (ts, event_id) pair.
 type EventQuery struct {
 	TenantID  string
 	MachineID string
@@ -107,12 +120,24 @@ type EventQuery struct {
 	From      *time.Time
 	To        *time.Time
 	Limit     int
+	Cursor    string // opaque; empty = start
+}
+
+// EventPage is a deterministic page of events plus an optional next cursor.
+type EventPage struct {
+	Events     []Event
+	NextCursor string // empty when no further results
 }
 
 // EventStore persists agent telemetry with idempotent inserts.
+//
+// InsertBatch semantics:
+//   - Callers must validate the batch (size, timestamps) before calling.
+//   - Duplicate (tenant_id, machine_id, event_id) — within the batch or
+//     against existing rows — are skipped idempotently (no error, no dup).
 type EventStore interface {
 	InsertBatch(ctx context.Context, events []Event) error
-	List(ctx context.Context, q EventQuery) ([]Event, error)
+	List(ctx context.Context, q EventQuery) (EventPage, error)
 }
 
 // AuditStore appends sensitive-action audit records.

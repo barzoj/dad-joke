@@ -84,6 +84,20 @@ func (s agentStub) GetPolicy(_ context.Context, _ agentapi.GetPolicyRequestObjec
 	}, nil
 }
 
+func (s agentStub) PostEvents(context.Context, agentapi.PostEventsRequestObject) (agentapi.PostEventsResponseObject, error) {
+	if s.mode == "unauthorized" {
+		return agentapi.PostEvents401JSONResponse{
+			Code: "unauthorized", Message: "missing or invalid agent token", RequestId: "req-events-401",
+		}, nil
+	}
+	if s.mode == "bad_request" {
+		return agentapi.PostEvents400JSONResponse{
+			Code: "bad_request", Message: "invalid event batch", RequestId: "req-events-400",
+		}, nil
+	}
+	return agentapi.PostEvents204Response{}, nil
+}
+
 func (s agentStub) PostHeartbeat(_ context.Context, req agentapi.PostHeartbeatRequestObject) (agentapi.PostHeartbeatResponseObject, error) {
 	switch s.mode {
 	case "unauthorized":
@@ -276,6 +290,25 @@ func (s controlStub) CreateMachineJob(_ context.Context, req controlapi.CreateMa
 		Stderr:    "",
 		CreatedAt: now,
 		ExpiresAt: expires,
+	}, nil
+}
+
+func (s controlStub) ListMachineEvents(_ context.Context, req controlapi.ListMachineEventsRequestObject) (controlapi.ListMachineEventsResponseObject, error) {
+	if s.mode == "unauthorized" {
+		return controlapi.ListMachineEvents401JSONResponse{
+			Code: "unauthorized", Message: "missing or invalid control token", RequestId: "req-events-401",
+		}, nil
+	}
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	return controlapi.ListMachineEvents200JSONResponse{
+		Events: []controlapi.MachineEvent{
+			{
+				EventId: "e-1",
+				Ts:      now,
+				Type:    "start",
+				Payload: map[string]any{"ok": true},
+			},
+		},
 	}, nil
 }
 

@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/events.tsp";
 import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
@@ -120,6 +121,25 @@ interface Policy {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: MachinePolicy;
+  } | StandardErrors;
+}
+
+@route("/v1/events")
+interface Events {
+  /**
+   * Ingest a compact batch of agent telemetry events.
+   * Requires AgentBearerAuth (`Authorization: Bearer dj_agt_...`).
+   *
+   * Hard limits: max 100 events (`400` when exceeded) and max 256 KiB
+   * request body (`413`). Validation is all-or-nothing before persist;
+   * duplicate `event_id` values are skipped idempotently (within and
+   * across batches). Malformed or excessively future-dated `ts`
+   * (> 5 minutes ahead of server clock) → `400`.
+   */
+  @post
+  @operationId("postEvents")
+  op postEvents(@body body: PostEventsRequest): {
+    @statusCode _: 204;
   } | StandardErrors;
 }
 

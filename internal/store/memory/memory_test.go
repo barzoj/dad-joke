@@ -189,9 +189,9 @@ func TestPolicyJobEventUser(t *testing.T) {
 	if err := st.Events().InsertBatch(ctx, []store.Event{{}}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("invalid event: %v", err)
 	}
-	list, err := st.Events().List(ctx, store.EventQuery{TenantID: "t", MachineID: "m", Type: "start", Limit: 10})
-	if err != nil || len(list) != 1 {
-		t.Fatalf("%v %+v", err, list)
+	page, err := st.Events().List(ctx, store.EventQuery{TenantID: "t", MachineID: "m", Type: "start", Limit: 10})
+	if err != nil || len(page.Events) != 1 {
+		t.Fatalf("%v %+v", err, page)
 	}
 
 	user := &store.User{TenantID: "t", Email: "a@b.c", PasswordHash: "x"}

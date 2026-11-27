@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/events.tsp";
 import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
@@ -526,6 +527,43 @@ interface Machines {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: Job[];
+  } | StandardErrors;
+
+  /**
+   * List telemetry events for a machine (strictly tenant-scoped).
+   * Ordered by `ts` ascending with `event_id` as tie-breaker.
+   * Cross-tenant `machine_id` returns an empty page (never another
+   * tenant's events). `limit` must be 1..100 when provided (default 50);
+   * invalid limit or cursor → `400`.
+   */
+  @get
+  @route("{machine_id}/events")
+  @operationId("listMachineEvents")
+  op listEvents(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string,
+
+    /** Optional event type filter (exact match). */
+    @query type?: string,
+
+    /** Inclusive lower bound on event `ts` (RFC 3339). */
+    @query from?: utcDateTime,
+
+    /** Exclusive upper bound on event `ts` (RFC 3339). */
+    @query to?: utcDateTime,
+
+    /**
+     * Page size (1..100). Default 50 when omitted.
+     * Values outside the range → `400`.
+     */
+    @query @minValue(1) @maxValue(100) limit?: int32,
+
+    /** Opaque cursor from a previous `next_cursor` (resume after that event). */
+    @query cursor?: string
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: EventListResponse;
   } | StandardErrors;
 }
 
