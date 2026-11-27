@@ -294,7 +294,7 @@ jobs:
           for i in $(seq 1 45); do
             ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
             if [[ -n "${ip}" ]] && docker run --rm --network "${net}" curlimages/curl:8.12.1 \
-              -fsS "http://${ip}/healthz" | grep -q '"status":"ok"'; then
+              -fsS "http://${ip}:8080/healthz" | grep -q '"status":"ok"'; then
               ok=1
               break
             fi
