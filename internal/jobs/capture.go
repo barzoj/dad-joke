@@ -54,13 +54,7 @@ func (w *cappedWriter) String() string {
 func (w *cappedWriter) Truncated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.truncated || len(w.buf) > w.max
+	return w.truncated
 }
 
-// discardWriter is used only when max is 0; still drains.
-type discardWriter struct{}
-
-func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
-
 var _ io.Writer = (*cappedWriter)(nil)
-var _ io.Writer = discardWriter{}

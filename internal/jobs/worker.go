@@ -140,6 +140,7 @@ func (w *Worker) processOne(ctx context.Context, jobID string) {
 	editor := bearerEditor(cfg.Token)
 
 	claim := claimJob(ctx, client, jobID, cfg.MachineID, editor)
+	w.Audit.Redact = []string{cfg.Token}
 	switch claim.Outcome {
 	case ClaimSkip:
 		_ = w.Audit.Append(AuditEntry{
@@ -170,9 +171,6 @@ func (w *Worker) processOne(ctx context.Context, jobID string) {
 	if execErr != nil && !execRes.TimedOut {
 		// Treat spawn/run infrastructure errors as failed results when possible.
 		w.Log.Log("jobs: execute error id=%s: %v", jobID, execErr)
-		if execRes.DurationMS == 0 {
-			execRes.DurationMS = 0
-		}
 		if execRes.Stderr == "" {
 			execRes.Stderr = TruncateUTF8String(execErr.Error(), MaxOutputBytes)
 		}
@@ -223,7 +221,6 @@ func (w *Worker) finishInvalid(ctx context.Context, client API, editor agentapi.
 	status := agentapi.DadJokeCommonJobResultStatusFailed
 	_ = postResult(ctx, client, editor, jobID, cfg.MachineID, status, &code, "", stderr, 0)
 	_ = postJobEvent(ctx, client, editor, cfg.MachineID, jobID, "failed", 0)
-	errStr := validErr.Error()
 	exit := 1
 	_ = w.Audit.Append(AuditEntry{
 		JobID:      jobID,
@@ -231,7 +228,7 @@ func (w *Worker) finishInvalid(ctx context.Context, client API, editor agentapi.
 		Status:     "failed",
 		ExitCode:   &exit,
 		DurationMS: 0,
-		Error:      errStr,
+		Error:      validErr.Error(),
 	})
 }
 

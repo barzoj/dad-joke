@@ -364,13 +364,13 @@ func TestWorker_TimedOutStatus(t *testing.T) {
 func TestAuditLog_NeverWritesToken(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	a := &AuditLog{DataDir: dir}
 	token := "dj_agt_" + strings.Repeat("b", 64)
+	a := &AuditLog{DataDir: dir, Redact: []string{token}}
 	err := a.Append(AuditEntry{
 		JobID:  "jid",
 		Type:   "cmd",
-		Status: "succeeded",
-		Error:  "ok token=" + token, // even if caller mistakenly includes it, file still written; worker must not
+		Status: "failed",
+		Error:  "spawn failed token=" + token,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -379,11 +379,16 @@ func TestAuditLog_NeverWritesToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Worker never puts token in Error; this test asserts Path + JSONL creation.
-	if !strings.Contains(string(raw), `"job_id":"jid"`) {
+	text := string(raw)
+	if !strings.Contains(text, `"job_id":"jid"`) {
 		t.Fatalf("audit = %s", raw)
 	}
-	// Ensure ACL apply did not prevent write on non-Windows.
+	if strings.Contains(text, token) {
+		t.Fatalf("raw agent token leaked into audit log: %s", text)
+	}
+	if !strings.Contains(text, auditRedacted) {
+		t.Fatalf("expected %s in audit line: %s", auditRedacted, text)
+	}
 	if _, err := os.Stat(filepath.Join(dir, AuditFileName)); err != nil {
 		t.Fatal(err)
 	}
