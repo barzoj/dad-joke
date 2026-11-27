@@ -86,7 +86,7 @@ Collections / models of note:
 
 ### MongoDB implementation (`internal/store/mongo`)
 
-Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay inside the package. `EnsureIndexes(ctx)` creates idempotent unique/compound/TTL indexes at startup (tenant name, user email, identity provider+subject, session hash, token kind+hash, event idempotency, event TTL, audit listing, etc.).
+Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay inside the package. `EnsureIndexes(ctx)` creates idempotent unique/compound/TTL indexes at startup (tenant name, user email, identity provider+subject, session hash, token kind+hash, unique `(tenant_id, machine_id)` on machines, event idempotency, event TTL, audit listing, etc.).
 
 ### `cmd/server`
 
@@ -102,6 +102,9 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
   - ControlAPI routes: `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie; same verification; agent tokens → `401`.
   - Successful auth puts `tenant_id` and actor id on `context.Context` (`internal/authctx`); user sessions also set `user_id` / `session_id`. Handlers are strictly tenant-scoped (cross-tenant → `404`).
 - **Token CRUD** (ControlAPI): create/list/delete agent tokens and API keys (session or PAT). Raw secret returned only on `201 Created`; at rest only SHA-256 hash + non-secret prefix. Issue and revoke append to `audit_logs` (`internal/audit`; hooks also exist for policy create / script launch).
+- **Heartbeat & machines:**
+  - `POST /v1/heartbeat` (AgentAPI): tenant from auth context only. `machine_id` must be RFC 4122 UUIDv4 (version + variant bits); otherwise `400` `ErrorResponse`. Atomically upserts one `machines` document per `(tenant_id, machine_id)` (unique index; Mongo `_id` = `tenant_id|machine_id`), setting `last_seen_at` from the injectable server clock (UTC) plus `agent_version`, `hostname`, `os_version`, `applied_policy_version`. Response: `server_time`, `desired_policy_version` (from `PolicyStore`, else `0`), `pending_job_ids` (from `JobStore`, else `[]`—never JSON `null`).
+  - `GET /v1/machines` / `GET /v1/machines/{machine_id}` (ControlAPI): tenant-scoped. `status` is computed at read time as `online` when `now - last_seen_at <= 3m`, else `offline` (not persisted). Missing/other-tenant machine → `404`; empty list → `[]`.
 - **Rate limits** (`internal/ratelimit`): in-memory sliding window per process (no Redis), injectable clock, bounded key set. Auth failures are limited per IP and per `wantKind`+token-hash (wrong-prefix probes charge IP only, so they cannot poison the other API's hash bucket). Mutating requests are limited per token/session id. Exhaustion returns `429` + `Retry-After`. DAL/infra errors from token/session lookup return `503` without burning auth-failure budget.
 - Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`), strict server timeouts, `http.MaxBytesReader` body limit, graceful shutdown on `SIGINT`/`SIGTERM`.
 - `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.

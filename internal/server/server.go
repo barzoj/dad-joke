@@ -141,18 +141,24 @@ func New(cfg Config) (*Server, error) {
 	root.HandleFunc("GET /healthz", s.handleHealthz)
 
 	controlHandler := controlapi.HandlerWithOptions(
-		controlapi.NewStrictHandler(control, nil),
+		controlapi.NewStrictHandlerWithOptions(control, nil, controlapi.StrictHTTPServerOptions{
+			RequestErrorHandlerFunc: writeRequestBindError,
+		}),
 		controlapi.StdHTTPServerOptions{
 			Middlewares: []controlapi.MiddlewareFunc{
 				injectClientIP,
 				controlAuthn.Middleware(store.TokenKindPAT),
 			},
+			ErrorHandlerFunc: writeRequestBindError,
 		},
 	)
 	agentHandler := agentapi.HandlerWithOptions(
-		agentapi.NewStrictHandler(agent, nil),
+		agentapi.NewStrictHandlerWithOptions(agent, nil, agentapi.StrictHTTPServerOptions{
+			RequestErrorHandlerFunc: writeRequestBindError,
+		}),
 		agentapi.StdHTTPServerOptions{
-			Middlewares: []agentapi.MiddlewareFunc{agentAuthn.Middleware(store.TokenKindAgent)},
+			Middlewares:      []agentapi.MiddlewareFunc{agentAuthn.Middleware(store.TokenKindAgent)},
+			ErrorHandlerFunc: writeRequestBindError,
 		},
 	)
 

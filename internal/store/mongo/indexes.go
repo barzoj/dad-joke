@@ -82,9 +82,9 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 			models: []mongo.IndexModel{{
 				Keys: bson.D{
 					{Key: "tenant_id", Value: 1},
-					{Key: "_id", Value: 1},
+					{Key: "machine_id", Value: 1},
 				},
-				Options: options.Index().SetName("idx_machines_tenant_id"),
+				Options: options.Index().SetUnique(true).SetName("uniq_machine_tenant_machine"),
 			}},
 		},
 		{

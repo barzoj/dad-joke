@@ -155,8 +155,9 @@ func tokenFromDoc(d tokenDoc) *store.Token {
 }
 
 type machineDoc struct {
-	ID                   string    `bson:"_id"`
+	ID                   string    `bson:"_id"` // tenant_id|machine_id
 	TenantID             string    `bson:"tenant_id"`
+	MachineID            string    `bson:"machine_id"`
 	Hostname             string    `bson:"hostname"`
 	OSVersion            string    `bson:"os_version"`
 	AgentVersion         string    `bson:"agent_version"`
@@ -165,10 +166,14 @@ type machineDoc struct {
 	DesiredPolicyVersion int32     `bson:"desired_policy_version"`
 }
 
+func machineKey(tenantID, machineID string) string {
+	return tenantID + "|" + machineID
+}
+
 func machineToDoc(m *store.Machine) machineDoc {
 	return machineDoc{
-		ID: m.ID, TenantID: m.TenantID, Hostname: m.Hostname,
-		OSVersion: m.OSVersion, AgentVersion: m.AgentVersion,
+		ID: machineKey(m.TenantID, m.ID), TenantID: m.TenantID, MachineID: m.ID,
+		Hostname: m.Hostname, OSVersion: m.OSVersion, AgentVersion: m.AgentVersion,
 		LastSeenAt:           m.LastSeenAt.UTC(),
 		AppliedPolicyVersion: m.AppliedPolicyVersion,
 		DesiredPolicyVersion: m.DesiredPolicyVersion,
@@ -177,7 +182,7 @@ func machineToDoc(m *store.Machine) machineDoc {
 
 func machineFromDoc(d machineDoc) *store.Machine {
 	return &store.Machine{
-		ID: d.ID, TenantID: d.TenantID, Hostname: d.Hostname,
+		ID: d.MachineID, TenantID: d.TenantID, Hostname: d.Hostname,
 		OSVersion: d.OSVersion, AgentVersion: d.AgentVersion,
 		LastSeenAt:           d.LastSeenAt.UTC(),
 		AppliedPolicyVersion: d.AppliedPolicyVersion,
@@ -195,7 +200,7 @@ type policyDoc struct {
 }
 
 func policyKey(tenantID, machineID string) string {
-	return tenantID + "|" + machineID
+	return machineKey(tenantID, machineID)
 }
 
 func policyToDoc(p *store.Policy) policyDoc {

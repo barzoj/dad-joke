@@ -39,7 +39,7 @@ func (c *ControlAPI) onlineWindow() time.Duration {
 	if c.Online > 0 {
 		return c.Online
 	}
-	return 5 * time.Minute
+	return 3 * time.Minute
 }
 
 func (c *ControlAPI) GetHealthz(context.Context, controlapi.GetHealthzRequestObject) (controlapi.GetHealthzResponseObject, error) {
