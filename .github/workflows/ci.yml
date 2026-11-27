@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    name: Test & build (windows-amd64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Vet
+        run: go vet ./...
+
+      # CGO is disabled for the static Windows binary; the race detector requires
+      # CGO, so we run tests without -race on windows-latest.
+      - name: Unit tests
+        env:
+          CGO_ENABLED: "0"
+        run: go test -v ./...
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          $version = "0.0.1-dev"
+          $commit = (git rev-parse --short HEAD).Trim()
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "commit=$commit" >> $env:GITHUB_OUTPUT
+
+      - name: Build dad-joke.exe with ldflags
+        run: |
+          .\scripts\build.ps1 `
+            -Version "${{ steps.meta.outputs.version }}" `
+            -Commit "${{ steps.meta.outputs.commit }}" `
+            -Output "dad-joke.exe"
+
+      - name: Verify version subcommand (smoke)
+        run: |
+          $out = (& .\dad-joke.exe version | Out-String).Trim()
+          $want = "dad-joke ${{ steps.meta.outputs.version }} (commit ${{ steps.meta.outputs.commit }})"
+          Write-Host "got:  $out"
+          Write-Host "want: $want"
+          if ($out -ne $want) {
+            throw "version output mismatch"
+          }
+
+      - name: Package release artifacts (dry-run for AC-03)
+        run: |
+          .\scripts\package-release.ps1 `
+            -Version "${{ steps.meta.outputs.version }}" `
+            -Commit "${{ steps.meta.outputs.commit }}" `
+            -DistDir "dist" `
+            -Tag "v0.0.1-dev"
+
+      - name: E2E acceptance tests
+        env:
+          CGO_ENABLED: "0"
+          DAD_JOKE_BIN: ${{ github.workspace }}\dad-joke.exe
+          DAD_JOKE_DIST: ${{ github.workspace }}\dist
+          DAD_JOKE_EXPECT_VERSION: ${{ steps.meta.outputs.version }}
+          DAD_JOKE_EXPECT_COMMIT: ${{ steps.meta.outputs.commit }}
+        # TC-03..TC-05 include self-update + health windows; allow ample time.
+        run: go test -tags=e2e -v -timeout 20m ./e2e/...
