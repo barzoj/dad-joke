@@ -97,6 +97,8 @@ func (c *ControlAPI) CreateApiKey(ctx context.Context, req controlapi.CreateApiK
 		return controlapi.CreateApiKey500JSONResponse{Code: "internal_error", Message: "token create failed", RequestId: uuid.NewString()}, nil
 	}
 	if err := c.Audit.TokenIssue(ctx, tenantID, actorID, tok.ID, store.TokenKindPAT, prefix, tok.Name); err != nil {
+		// Roll back so an unaudited active secret cannot linger.
+		_ = c.Store.Tokens().Revoke(ctx, tenantID, tok.ID, c.now())
 		return controlapi.CreateApiKey500JSONResponse{Code: "internal_error", Message: "audit failed", RequestId: uuid.NewString()}, nil
 	}
 	id, err := uuid.Parse(tok.ID)
@@ -208,6 +210,8 @@ func (c *ControlAPI) createToken(ctx context.Context, body *controlapi.CreateAge
 		return controlapi.CreateAgentToken500JSONResponse{Code: "internal_error", Message: "token create failed", RequestId: uuid.NewString()}, nil
 	}
 	if err := c.Audit.TokenIssue(ctx, tenantID, actorID, tok.ID, kind, prefix, tok.Name); err != nil {
+		// Roll back so an unaudited active secret cannot linger.
+		_ = c.Store.Tokens().Revoke(ctx, tenantID, tok.ID, c.now())
 		return controlapi.CreateAgentToken500JSONResponse{Code: "internal_error", Message: "audit failed", RequestId: uuid.NewString()}, nil
 	}
 	id, err := uuid.Parse(tok.ID)

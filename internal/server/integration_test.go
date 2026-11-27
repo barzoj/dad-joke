@@ -23,12 +23,9 @@ func openMongoStore(t *testing.T) *mongostore.Store {
 		t.Skip("DAD_JOKE_MONGODB_URI not set")
 	}
 	dbName := "dadjoke_auth_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	st, err := mongostore.Open(ctx, mongostore.Config{URI: uri, Database: dbName})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	st := openMongoWithRetry(t, ctx, mongostore.Config{URI: uri, Database: dbName})
 	t.Cleanup(func() {
 		_ = st.Close(context.Background())
 	})
@@ -36,6 +33,62 @@ func openMongoStore(t *testing.T) *mongostore.Store {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
 	return st
+}
+
+// openMongoWithRetry retries Open on transient ping / server-selection errors
+// while the CI Mongo service is still warming up under parallel go test load.
+func openMongoWithRetry(t *testing.T, ctx context.Context, cfg mongostore.Config) *mongostore.Store {
+	t.Helper()
+	const maxAttempts = 5
+	backoff := 250 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		st, err := mongostore.Open(ctx, cfg)
+		if err == nil {
+			return st
+		}
+		lastErr = err
+		if !isTransientMongoOpenError(err) {
+			t.Fatalf("Open: %v", err)
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Open: %v (last: %v)", ctx.Err(), lastErr)
+		case <-time.After(backoff):
+		}
+		if backoff < 4*time.Second {
+			backoff *= 2
+		}
+	}
+	t.Fatalf("Open after %d attempts: %v", maxAttempts, lastErr)
+	return nil
+}
+
+func isTransientMongoOpenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"server selection",
+		"connection refused",
+		"i/o timeout",
+		"no reachable servers",
+		"context deadline exceeded",
+		"connection reset",
+		"broken pipe",
+		"temporarily unavailable",
+		"wait queue timeout",
+		"topology is closed",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestIntegration_AuthTokenCRUDAndRevoke(t *testing.T) {

@@ -28,13 +28,10 @@ func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	uri := mongoURI(t)
 	dbName := "dadjoke_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 
-	st, err := Open(ctx, Config{URI: uri, Database: dbName})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	st := openWithRetry(t, ctx, Config{URI: uri, Database: dbName})
 	t.Cleanup(func() {
 		dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer dropCancel()
@@ -45,6 +42,62 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
 	return st
+}
+
+// openWithRetry retries Open on transient ping / server-selection errors while
+// Mongo is still becoming ready under parallel go test load.
+func openWithRetry(t *testing.T, ctx context.Context, cfg Config) *Store {
+	t.Helper()
+	const maxAttempts = 5
+	backoff := 250 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		st, err := Open(ctx, cfg)
+		if err == nil {
+			return st
+		}
+		lastErr = err
+		if !isTransientMongoOpenError(err) {
+			t.Fatalf("Open: %v", err)
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Open: %v (last: %v)", ctx.Err(), lastErr)
+		case <-time.After(backoff):
+		}
+		if backoff < 4*time.Second {
+			backoff *= 2
+		}
+	}
+	t.Fatalf("Open after %d attempts: %v", maxAttempts, lastErr)
+	return nil
+}
+
+func isTransientMongoOpenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"server selection",
+		"connection refused",
+		"i/o timeout",
+		"no reachable servers",
+		"context deadline exceeded",
+		"connection reset",
+		"broken pipe",
+		"temporarily unavailable",
+		"wait queue timeout",
+		"topology is closed",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestIntegration_EnsureIndexesIdempotent(t *testing.T) {

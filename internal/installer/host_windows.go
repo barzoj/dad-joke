@@ -12,11 +12,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barzoj/dad-joke/internal/winscm"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+// Bound for SCM transitional waits inside StartService (StopPending → Stopped).
+const scmTransitionTimeout = 60 * time.Second
 
 // SDDL for ProgramData and Program Files: disable inheritance;
 // SYSTEM + Administrators Full Control only (ARCHITECTURE.md / AGENTS.md).
@@ -357,10 +361,24 @@ func (h *WindowsHost) StartService(name string) error {
 	if err != nil {
 		return err
 	}
-	if status.State == svc.Running {
+	switch winscm.PlanStart(uint32(status.State)) {
+	case winscm.StartNop:
+		// Running or StartPending: WaitForState(Running) follows.
 		return nil
+	case winscm.StartAfterStop:
+		// Still stopping — wait for SERVICE_STOPPED before StartServiceW.
+		if err := waitHandleState(s, svc.Stopped, scmTransitionTimeout); err != nil {
+			return err
+		}
 	}
-	return s.Start()
+	if err := s.Start(); err != nil {
+		// TOCTOU: another starter won the race, or we queried during StartPending.
+		if winscm.IsAlreadyRunning(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *WindowsHost) StopService(name string) error {
@@ -381,10 +399,14 @@ func (h *WindowsHost) StopService(name string) error {
 	if err != nil {
 		return err
 	}
-	if status.State == svc.Stopped {
+	if winscm.StopNoop(uint32(status.State)) {
+		// Stopped or StopPending: WaitForState(Stopped) follows.
 		return nil
 	}
 	_, err = s.Control(svc.Stop)
+	if err != nil && winscm.IsBenignStopError(err) {
+		return nil
+	}
 	return err
 }
 
@@ -441,7 +463,10 @@ func (h *WindowsHost) WaitForState(name string, state ServiceState, timeout time
 		return err
 	}
 	defer s.Close()
+	return waitHandleState(s, want, timeout)
+}
 
+func waitHandleState(s *mgr.Service, want svc.State, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := s.Query()
@@ -452,7 +477,7 @@ func (h *WindowsHost) WaitForState(name string, state ServiceState, timeout time
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for %s to become %s (last=%d)", name, state, status.State)
+			return fmt.Errorf("timeout waiting for service state %d (last=%d)", want, status.State)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

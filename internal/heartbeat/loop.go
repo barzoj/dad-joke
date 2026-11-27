@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -106,6 +107,7 @@ func (l *Loop) Run(ctx context.Context) error {
 		l.Log.Log("heartbeat: client init failed (idle until stop): %s", redactErr(err, cfg.Token))
 		return l.idle(ctx)
 	}
+	clientBackend := backend
 
 	l.safeBeat(ctx, client, cfg)
 
@@ -125,14 +127,18 @@ func (l *Loop) Run(ctx context.Context) error {
 				backend = strings.TrimSpace(cfg.BackendURL)
 				if backend == "" {
 					l.Log.Log("heartbeat: backend_url cleared; pausing heartbeats")
+					clientBackend = ""
 					continue
 				}
-				rebuilt, clientErr := l.NewClient(backend)
-				if clientErr != nil {
-					l.Log.Log("heartbeat: client rebuild failed (continuing): %s", redactErr(clientErr, cfg.Token))
-					continue
+				if backend != clientBackend {
+					rebuilt, clientErr := l.NewClient(backend)
+					if clientErr != nil {
+						l.Log.Log("heartbeat: client rebuild failed (continuing): %s", redactErr(clientErr, cfg.Token))
+						continue
+					}
+					client = rebuilt
+					clientBackend = backend
 				}
-				client = rebuilt
 			}
 			if strings.TrimSpace(cfg.BackendURL) == "" {
 				continue
@@ -173,6 +179,10 @@ func (l *Loop) safeBeat(ctx context.Context, client HeartbeatClient, cfg config.
 		return
 	}
 	if err := l.beatOnce(ctx, client, cfg); err != nil {
+		// Shutdown cancel is expected; do not log a spurious beat failure.
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		l.Log.Log("heartbeat: beat failed (continuing): %s", redactErr(err, cfg.Token))
 	}
 }

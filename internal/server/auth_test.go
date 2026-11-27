@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -550,6 +551,133 @@ func TestAuth_RepeatedRevokedToken429(t *testing.T) {
 	if err != nil || n < 1 {
 		t.Fatalf("Retry-After = %q", retryAfter)
 	}
+}
+
+func TestAuth_MutationLimiter429RetryAfter(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	_, pat := seedTenantPAT(t, st, "mut-"+uuid.NewString()[:8])
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	mutations := ratelimit.New(ratelimit.Config{Window: time.Minute, MaxHits: 2, Clock: clock})
+	base := startTestServer(t, st, server.Config{
+		MutationLimiter: mutations,
+		Clock:           clock,
+	})
+
+	var lastCode int
+	var lastHdr http.Header
+	var lastBody []byte
+	for i := 0; i < 4; i++ {
+		lastCode, lastHdr, lastBody = doJSON(t, http.MethodPost, base+"/v1/agent-tokens", pat, map[string]any{
+			"name": "mut-" + strconv.Itoa(i),
+		})
+		if lastCode == http.StatusTooManyRequests {
+			break
+		}
+		if lastCode != http.StatusCreated {
+			t.Fatalf("iter %d: status=%d body=%s", i, lastCode, lastBody)
+		}
+	}
+	if lastCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body=%s", lastCode, lastBody)
+	}
+	if ra := lastHdr.Get("Retry-After"); ra == "" {
+		t.Fatal("missing Retry-After")
+	}
+	assertErrorResponse(t, lastBody)
+}
+
+func TestAuth_SessionMutationLimiter429RetryAfter(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	mutations := ratelimit.New(ratelimit.Config{Window: time.Minute, MaxHits: 2, Clock: clock})
+	base := startTestServer(t, st, server.Config{
+		MutationLimiter: mutations,
+		Clock:           clock,
+	})
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": "mutses-" + uuid.NewString()[:8] + "@example.com", "password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register: %d %s", code, body)
+	}
+	var sess struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &sess); err != nil {
+		t.Fatal(err)
+	}
+
+	var lastCode int
+	var lastHdr http.Header
+	var lastBody []byte
+	for i := 0; i < 4; i++ {
+		lastCode, lastHdr, lastBody = doJSON(t, http.MethodPost, base+"/v1/api-keys", sess.AccessToken, map[string]any{
+			"name": "ses-mut-" + strconv.Itoa(i),
+		})
+		if lastCode == http.StatusTooManyRequests {
+			break
+		}
+		if lastCode != http.StatusCreated {
+			t.Fatalf("iter %d: status=%d body=%s", i, lastCode, lastBody)
+		}
+	}
+	if lastCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body=%s", lastCode, lastBody)
+	}
+	if ra := lastHdr.Get("Retry-After"); ra == "" {
+		t.Fatal("missing Retry-After")
+	}
+	assertErrorResponse(t, lastBody)
+}
+
+func TestAuth_TokenCreateAuditFailureRevokesOrphan(t *testing.T) {
+	t.Parallel()
+	baseStore := memory.New()
+	tenantID, pat := seedTenantPAT(t, baseStore, "auditfail-"+uuid.NewString()[:8])
+	failing := &failingAuditStore{Store: baseStore, fail: true}
+	base := startTestServer(t, failing, server.Config{})
+
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/agent-tokens", pat, map[string]any{"name": "should-roll-back"})
+	if code != http.StatusInternalServerError {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	assertErrorResponse(t, body)
+
+	listed, err := baseStore.Tokens().ListByTenant(context.Background(), tenantID, store.TokenKindAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("tokens = %d, want 1 revoked orphan", len(listed))
+	}
+	if listed[0].RevokedAt == nil {
+		t.Fatal("orphan active secret left behind after audit failure")
+	}
+}
+
+type failingAuditStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failingAuditStore) Audits() store.AuditStore {
+	return failingAuditEntries{AuditStore: s.Store.Audits(), parent: s}
+}
+
+type failingAuditEntries struct {
+	store.AuditStore
+	parent *failingAuditStore
+}
+
+func (a failingAuditEntries) Append(ctx context.Context, e *store.AuditEntry) error {
+	if a.parent.fail {
+		return errors.New("audit append failed")
+	}
+	return a.AuditStore.Append(ctx, e)
 }
 
 func assertErrorResponse(t *testing.T, body []byte) {

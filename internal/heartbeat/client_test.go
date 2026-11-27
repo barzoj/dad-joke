@@ -52,6 +52,28 @@ func TestCheckRedirectKeepsAuthorizationSameHost(t *testing.T) {
 	}
 }
 
+func TestCheckRedirectStripsAuthorizationOnSchemeChange(t *testing.T) {
+	t.Parallel()
+	orig, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:1/v1/heartbeat", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig.Header.Set("Authorization", "Bearer secret-token")
+
+	next, err := http.NewRequest(http.MethodPost, "https://127.0.0.1:1/v1/heartbeat", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Header.Set("Authorization", "Bearer secret-token")
+
+	if err := checkRedirect(next, []*http.Request{orig}); err != nil {
+		t.Fatal(err)
+	}
+	if next.Header.Get("Authorization") != "" {
+		t.Fatalf("Authorization not stripped on scheme change: %q", next.Header.Get("Authorization"))
+	}
+}
+
 func TestCheckRedirectRejectsNonLoopbackHTTP(t *testing.T) {
 	t.Parallel()
 	next, _ := http.NewRequest(http.MethodGet, "http://example.com/x", nil)

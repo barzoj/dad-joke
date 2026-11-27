@@ -235,6 +235,9 @@ func TestPolicyJobEventUser(t *testing.T) {
 	if err := st.Sessions().Revoke(ctx, ses.ID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.Sessions().Revoke(ctx, ses.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("idempotent revoke: %v", err)
+	}
 	gotSes, err = st.Sessions().GetByID(ctx, ses.ID)
 	if err != nil || gotSes.RevokedAt == nil {
 		t.Fatalf("revoked: %v %+v", err, gotSes)
