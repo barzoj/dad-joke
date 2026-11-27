@@ -154,10 +154,18 @@ func decodeToolJSON(t *testing.T, res *mcpsdk.CallToolResult) any {
 
 // assertStructuredContentObject enforces MCP CallToolResult.structuredContent
 // is a JSON object (Record<string, unknown>), never an array or primitive.
+// Successful calls must include a non-nil object; error calls may omit it.
 func assertStructuredContentObject(t *testing.T, res *mcpsdk.CallToolResult) {
 	t.Helper()
-	if res == nil || res.StructuredContent == nil {
-		return
+	if res == nil {
+		t.Fatal("nil CallToolResult")
+	}
+	if res.IsError {
+		if res.StructuredContent == nil {
+			return
+		}
+	} else if res.StructuredContent == nil {
+		t.Fatal("successful tool call missing StructuredContent object")
 	}
 	raw, err := json.Marshal(res.StructuredContent)
 	if err != nil {
@@ -166,6 +174,9 @@ func assertStructuredContentObject(t *testing.T, res *mcpsdk.CallToolResult) {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		t.Fatalf("StructuredContent must be a JSON object, got %s", raw)
+	}
+	if res.IsError {
+		return
 	}
 	text := toolText(t, res)
 	var textMap map[string]any

@@ -129,8 +129,15 @@ func decodeToolJSON(t *testing.T, res *mcpsdk.CallToolResult) any {
 
 func assertStructuredContentIsObject(t *testing.T, res *mcpsdk.CallToolResult) {
 	t.Helper()
-	if res == nil || res.StructuredContent == nil {
-		return
+	if res == nil {
+		t.Fatal("nil CallToolResult")
+	}
+	if res.IsError {
+		if res.StructuredContent == nil {
+			return
+		}
+	} else if res.StructuredContent == nil {
+		t.Fatal("successful tool call missing StructuredContent object")
 	}
 	raw, err := json.Marshal(res.StructuredContent)
 	if err != nil {

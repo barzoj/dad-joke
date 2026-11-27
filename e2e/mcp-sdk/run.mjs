@@ -21,7 +21,9 @@ function fail(msg) {
 }
 
 function assertObject(label, value) {
-  if (value === undefined || value === null) return;
+  if (value === undefined || value === null) {
+    fail(`${label}: structuredContent is required on successful tool calls`);
+  }
   if (typeof value !== "object" || Array.isArray(value)) {
     fail(`${label}: structuredContent must be a JSON object, got ${Array.isArray(value) ? "array" : typeof value}`);
   }
@@ -63,11 +65,16 @@ async function callTool(client, name, args = {}) {
     { method: "tools/call", params: { name, arguments: args } },
     CallToolResultSchema,
   );
-  assertObject(`${name}.structuredContent`, result.structuredContent);
   if (result.isError) {
     fail(`${name} returned isError unexpectedly: ${JSON.stringify(result)}`);
   }
+  assertObject(`${name}.structuredContent`, result.structuredContent);
   return result;
+}
+
+function structuredPayload(result) {
+  assertObject("structuredContent", result.structuredContent);
+  return result.structuredContent;
 }
 
 async function main() {
@@ -101,14 +108,14 @@ async function main() {
 
     // Empty list_machines before enrollment.
     let res = await callTool(client, "list_machines", {});
-    let payload = res.structuredContent || JSON.parse(res.content[0].text);
+    let payload = structuredPayload(res);
     assertArrayField(payload, "machines", 0);
     if (payload.machines.length !== 0) fail("list_machines empty: expected []");
     console.log("list_machines empty ok");
 
     // Empty manage_agent_tokens list.
     res = await callTool(client, "manage_agent_tokens", { action: "list" });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     assertArrayField(payload, "tokens", 0);
     if (payload.tokens.length !== 0) fail("manage_agent_tokens list empty: expected []");
     console.log("manage_agent_tokens list empty ok");
@@ -118,7 +125,7 @@ async function main() {
       action: "create",
       name: `sdk-e2e-${randomUUID().slice(0, 8)}`,
     });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     const agentTok = payload.token;
     const tokID = payload.id;
     if (typeof agentTok !== "string" || !agentTok.startsWith("dj_agt_")) {
@@ -127,7 +134,7 @@ async function main() {
     console.log("manage_agent_tokens create ok");
 
     res = await callTool(client, "manage_agent_tokens", { action: "list" });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     assertArrayField(payload, "tokens", 1);
     console.log("manage_agent_tokens list populated ok");
 
@@ -147,7 +154,7 @@ async function main() {
     if (hb.status !== 200) fail(`heartbeat ${hb.status}: ${hb.text}`);
 
     res = await callTool(client, "list_machines", {});
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     const machines = assertArrayField(payload, "machines", 1);
     if (!machines.some((m) => m.machine_id === machineID)) {
       fail(`enrolled machine ${machineID} not in list`);
@@ -155,7 +162,7 @@ async function main() {
     console.log("list_machines populated ok");
 
     res = await callTool(client, "get_machine", { machine_id: machineID });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     if (payload.machine_id !== machineID) fail(`get_machine mismatch: ${JSON.stringify(payload)}`);
     console.log("get_machine ok");
 
@@ -164,7 +171,7 @@ async function main() {
       expected_version: 0,
       document: { block: ["game.exe"] },
     });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     if (payload.version !== 1) fail(`set_policy version: ${JSON.stringify(payload)}`);
     console.log("set_policy ok");
 
@@ -174,13 +181,13 @@ async function main() {
       payload: "echo mcp-sdk",
       expires_at: new Date(Date.now() + 3600_000).toISOString(),
     });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     const jobID = payload.id;
     if (!jobID) fail(`run_script missing id: ${JSON.stringify(payload)}`);
     console.log("run_script ok");
 
     res = await callTool(client, "get_job", { job_id: jobID });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     if (payload.status !== "pending" && payload.status !== "canceled") {
       // pending expected; tolerate cancel races
       console.log("get_job status:", payload.status);
@@ -188,12 +195,12 @@ async function main() {
     console.log("get_job ok");
 
     res = await callTool(client, "list_events", { machine_id: machineID });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     assertArrayField(payload, "events", 0);
     console.log("list_events ok");
 
     res = await callTool(client, "manage_agent_tokens", { action: "revoke", id: tokID });
-    payload = res.structuredContent || JSON.parse(res.content[0].text);
+    payload = structuredPayload(res);
     if (payload.revoked !== true) fail(`revoke: ${JSON.stringify(payload)}`);
     console.log("manage_agent_tokens revoke ok");
 

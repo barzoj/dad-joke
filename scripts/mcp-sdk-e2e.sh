@@ -80,7 +80,11 @@ PAT="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$K
 echo "==> npm install @modelcontextprotocol/sdk"
 (
   cd e2e/mcp-sdk
-  npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+  if [[ -f package-lock.json ]]; then
+    npm ci --omit=dev
+  else
+    npm install --omit=dev
+  fi
 )
 
 echo "==> run StreamableHTTP client regression"

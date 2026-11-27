@@ -16,8 +16,8 @@ import (
 )
 
 // TestMCP_StructuredContentWireObject asserts the MCP CallToolResult contract on
-// the raw JSON-RPC wire for all seven tools: structuredContent, when present,
-// is strictly a JSON object; content[0].text matches; empty lists serialize as [].
+// the raw JSON-RPC wire for all seven tools: every successful call MUST include
+// a JSON-object structuredContent; content[0].text matches; empty lists are [].
 func TestMCP_StructuredContentWireObject(t *testing.T) {
 	t.Parallel()
 	st := memory.New()
@@ -138,7 +138,7 @@ func TestMCP_StructuredContentWireObject(t *testing.T) {
 	})
 	assertWireObjectResult(t, revoked, false)
 
-	// --- error cases: structuredContent omitted or still an object ---
+	// --- error cases: isError=true; structuredContent omitted or still an object ---
 	errMachine := callToolWire(t, mcpURL, pat, 30, "get_machine", map[string]any{
 		"machine_id": uuid.NewString(),
 	})
@@ -153,6 +153,31 @@ func TestMCP_StructuredContentWireObject(t *testing.T) {
 		"job_id": "not-a-uuid",
 	})
 	assertWireObjectResult(t, errJob, true)
+
+	errPolicy := callToolWire(t, mcpURL, pat, 33, "set_policy", map[string]any{
+		"machine_id":       "not-a-uuid",
+		"expected_version": 0,
+		"document":         map[string]any{"block": []string{"x"}},
+	})
+	assertWireObjectResult(t, errPolicy, true)
+
+	errScript := callToolWire(t, mcpURL, pat, 34, "run_script", map[string]any{
+		"machine_id": machineID,
+		"type":       "not-an-interpreter",
+		"payload":    "echo x",
+		"expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	})
+	assertWireObjectResult(t, errScript, true)
+
+	errEvents := callToolWire(t, mcpURL, pat, 35, "list_events", map[string]any{
+		"machine_id": "not-a-uuid",
+	})
+	assertWireObjectResult(t, errEvents, true)
+
+	errRevoke := callToolWire(t, mcpURL, pat, 36, "manage_agent_tokens", map[string]any{
+		"action": "revoke", "id": uuid.NewString(),
+	})
+	assertWireObjectResult(t, errRevoke, true)
 }
 
 func callJSONRPC(t *testing.T, mcpURL, pat string, id int, method string, params map[string]any) map[string]any {
@@ -228,13 +253,16 @@ func assertWireObjectResult(t *testing.T, result map[string]any, expectError boo
 	}
 
 	sc, hasSC := result["structuredContent"]
-	if hasSC && sc != nil {
-		switch sc.(type) {
-		case map[string]any:
-			// ok
-		default:
+	scObj, scIsObj := sc.(map[string]any)
+	if !expectError {
+		if !hasSC || sc == nil {
+			t.Fatalf("successful tool call missing structuredContent object: %v", result)
+		}
+		if !scIsObj {
 			t.Fatalf("structuredContent must be a JSON object, got %T (%v)", sc, sc)
 		}
+	} else if hasSC && sc != nil && !scIsObj {
+		t.Fatalf("error structuredContent must be a JSON object when present, got %T (%v)", sc, sc)
 	}
 
 	content, _ := result["content"].([]any)
@@ -257,16 +285,10 @@ func assertWireObjectResult(t *testing.T, result map[string]any, expectError boo
 		t.Fatalf("content text not JSON: %v body=%s", err, text)
 	}
 	if !expectError {
-		if _, ok := decoded.(map[string]any); !ok {
-			t.Fatalf("content text must be a JSON object, got %T (%s)", decoded, text)
-		}
-	}
-	if hasSC && sc != nil {
 		textObj, ok := decoded.(map[string]any)
 		if !ok {
-			t.Fatalf("content text must match object structuredContent; text=%s", text)
+			t.Fatalf("content text must be a JSON object, got %T (%s)", decoded, text)
 		}
-		scObj := sc.(map[string]any)
 		textRaw, _ := json.Marshal(textObj)
 		scRaw, _ := json.Marshal(scObj)
 		var textNorm, scNorm any
@@ -282,17 +304,11 @@ func assertWireObjectResult(t *testing.T, result map[string]any, expectError boo
 
 func wirePayloadObject(t *testing.T, result map[string]any) map[string]any {
 	t.Helper()
-	if sc, ok := result["structuredContent"].(map[string]any); ok && sc != nil {
-		return sc
+	sc, ok := result["structuredContent"].(map[string]any)
+	if !ok || sc == nil {
+		t.Fatalf("structuredContent object required, got %T (%v)", result["structuredContent"], result["structuredContent"])
 	}
-	content, _ := result["content"].([]any)
-	block, _ := content[0].(map[string]any)
-	text, _ := block["text"].(string)
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(text), &obj); err != nil {
-		t.Fatalf("payload object: %v text=%s", err, text)
-	}
-	return obj
+	return sc
 }
 
 func assertWireListField(t *testing.T, result map[string]any, field string, wantLen int) {
