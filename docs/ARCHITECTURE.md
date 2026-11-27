@@ -68,6 +68,16 @@ Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400`
 
 Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, `CreatedApiKey`) and register/login session responses (`AuthSession.access_token`); they are absent from every `GET` summary/list model. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
 
+### Remote MCP (Streamable HTTP)
+
+`cmd/server` mounts a **stateless Streamable HTTP** MCP endpoint at `/mcp` (`internal/mcp`). The MCP layer is a thin adapter over the generated `gen/go/controlapi` HTTP client (in-process RoundTripper to the same process's ControlAPI handler). MCP packages **must not** import `internal/store` or `go.mongodb.org/mongo-driver` (enforced by `internal/mcp` architecture tests).
+
+| Concern | Behavior |
+| --- | --- |
+| **Auth** | Every MCP HTTP request requires `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie. Credentials are probed via ControlAPI (`GET /v1/machines`) before the MCP session proceeds; missing/invalid/revoked credentials return HTTP `401` with no raw token details. The same credentials are forwarded on every tool → ControlAPI call so tenant scoping stays in ControlAPI. |
+| **Tools (exactly 7)** | `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job` (read or `action=cancel`), `list_events`, `manage_agent_tokens` (`action=create\|list\|revoke`) |
+| **Errors** | Upstream ControlAPI `400` / `401` / `404` / `409` / `413` / `429` (and tool argument validation) map to clean MCP tool errors: no stack traces; raw `dj_pat_` / `dj_agt_` / `dj_ses_` secrets are redacted from logs and error bodies. Streamable HTTP rejects missing/invalid `Accept` per the MCP transport. |
+
 ## Control-plane server & data layer (current)
 
 ### DAL boundary (`internal/store`)
@@ -76,7 +86,7 @@ Domain models are plain Go structs (string UUIDs, no `bson` tags, no `ObjectID`)
 
 `TenantStore`, `UserStore`, `SessionStore`, `TokenStore`, `MachineStore`, `PolicyStore`, `JobStore`, `EventStore`, `AuditStore`, plus `Pinger` and a `Store` facade (`EnsureIndexes`, `Close`).
 
-HTTP handlers and product logic talk only to these interfaces. An architecture test (`internal/archtest`) fails CI if any package outside `internal/store/mongo` imports `go.mongodb.org/mongo-driver`.
+HTTP handlers and product logic talk only to these interfaces. An architecture test (`internal/archtest`) fails CI if any package outside `internal/store/mongo` imports `go.mongodb.org/mongo-driver`. MCP packages additionally fail CI if they import `internal/store` or `mongo-driver`.
 
 Collections / models of note:
 
@@ -84,7 +94,7 @@ Collections / models of note:
 - `user_identities`: `id`, `user_id`, `provider`, `subject` (unique on `(provider, subject)`), `created_at`
 - `sessions`: hashed `dj_ses_...` credentials with expiry and revoke timestamp
 - `policies`: one document per `(tenant_id, machine_id)` with monotonic `version`, opaque JSON `document`, and `updated_at`. `PolicyStore.Put` uses `expected_version` (0 creates version 1; otherwise the stored version must match or `ErrConflict`) so concurrent writers cannot lose updates.
-- `jobs`: one-shot command/script assignments with mandatory `expires_at`, hard 64 KiB caps on `payload`/`stdout`/`stderr`, and status `pending` → `running` → terminal (`succeeded`/`failed`/`canceled`/`timed_out`)
+- `jobs`: one-shot command/script assignments with interpreter `type` (`powershell`/`cmd`), mandatory `expires_at`, optional `timeout_seconds` (1..300), hard 64 KiB caps on `payload`/`stdout`/`stderr`, and status `pending` → `running` → terminal (`succeeded`/`failed`/`canceled`/`timed_out`)
 - `events`: agent telemetry with client `event_id` idempotency key, `ts`, `type`, and opaque JSON `payload`. `EventStore.InsertBatch` skips duplicate `(tenant_id, machine_id, event_id)` idempotently (within and across batches). `EventStore.List` is tenant-scoped, ordered by `ts` ascending then `event_id`, and supports opaque cursor pagination.
 
 ### MongoDB implementation (`internal/store/mongo`)
@@ -124,6 +134,7 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
   - Mongo indexes created at startup: unique `(tenant_id, machine_id, event_id)`, compound `(tenant_id, machine_id, ts)`, and TTL `ttl_events_ts` on `ts` (`expireAfterSeconds = 30*24*3600`).
 - **Rate limits** (`internal/ratelimit`): in-memory sliding window per process (no Redis), injectable clock, bounded key set. Auth failures are limited per IP and per `wantKind`+token-hash (wrong-prefix probes charge IP only, so they cannot poison the other API's hash bucket). Mutating requests are limited per token/session id. Exhaustion returns `429` + `Retry-After`. DAL/infra errors from token/session lookup return `503` without burning auth-failure budget.
 - Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`), strict server timeouts, `http.MaxBytesReader` body limit, graceful shutdown on `SIGINT`/`SIGTERM`.
+- **MCP** at `/mcp` (see [Remote MCP](#remote-mcp-streamable-http)): Streamable HTTP, ControlAPI-client-only, seven compact tools, PAT/session auth with tenant isolation.
 - `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.
 - `cmd/server create-user --email ... --password ... [--tenant-name ...]` creates a tenant + argon2id user in MongoDB even when `ALLOW_SIGNUP=false` (password may also come from `DAD_JOKE_CREATE_USER_PASSWORD`).
 
