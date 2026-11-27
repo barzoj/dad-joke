@@ -107,6 +107,50 @@ func TestMiddleware_StoreError503NoRateLimitBurn(t *testing.T) {
 	}
 }
 
+func TestMiddleware_AuthFailHashBucketAcrossDistinctIPs(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	lim := ratelimit.New(ratelimit.Config{Window: time.Minute, MaxHits: 3, Clock: clock})
+	authn := NewAuthenticator(AuthConfig{
+		Store:        st,
+		AuthFailures: lim,
+		Clock:        clock,
+	})
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := authn.Middleware(store.TokenKindPAT)(okHandler)
+
+	// Same invalid PAT hash from distinct client IPs — IP buckets stay under
+	// MaxHits, so only the shared hash bucket can produce 429.
+	bad := "dj_pat_" + "aa" + uuid.NewString() + uuid.NewString()[:30]
+	var saw429 bool
+	var retryAfter string
+	for i := 0; i < 6; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/api-keys", nil)
+		req.RemoteAddr = fmt.Sprintf("10.1.0.%d:40000", i+1)
+		req.Header.Set("Authorization", "Bearer "+bad)
+		rr := httptest.NewRecorder()
+		mw.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			saw429 = true
+			retryAfter = rr.Header().Get("Retry-After")
+			break
+		}
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("iter %d: status=%d", i, rr.Code)
+		}
+	}
+	if !saw429 {
+		t.Fatal("expected hash-bucket 429 across distinct IPs")
+	}
+	if retryAfter == "" {
+		t.Fatal("missing Retry-After")
+	}
+}
+
 type mwTokenFailStore struct {
 	store.Store
 	err error

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/barzoj/dad-joke/internal/server"
+	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/barzoj/dad-joke/internal/store/memory"
 	"github.com/google/uuid"
 )
@@ -171,6 +172,66 @@ func TestAgentHeartbeat_InvalidMachineID400(t *testing.T) {
 			}
 			assertErrorResponse(t, body)
 		})
+	}
+}
+
+func TestAgentHeartbeat_PolicyAndPendingJobs(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	tenantID, pat := seedTenantPAT(t, st, "hbpol-"+uuid.NewString()[:8])
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	base := startTestServer(t, st, server.Config{Clock: func() time.Time { return now }})
+	token := createAgentToken(t, base, pat)
+	machineID := uuid.NewString()
+
+	pol := &store.Policy{
+		TenantID:  tenantID,
+		MachineID: machineID,
+		Document:  []byte(`{"mode":"lock"}`),
+	}
+	if err := st.Policies().Put(context.Background(), pol, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Bump to version 2 so desired is non-zero and clearly from DAL.
+	if err := st.Policies().Put(context.Background(), pol, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &store.Job{
+		TenantID:  tenantID,
+		MachineID: machineID,
+		Payload:   "echo pending",
+		ExpiresAt: now.Add(time.Hour),
+	}
+	if err := st.Jobs().Create(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := postHeartbeat(t, base, token, map[string]any{
+		"machine_id": machineID, "agent_version": "0.0.1", "hostname": "pc",
+		"os_version": "Win", "applied_policy_version": 1,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("heartbeat: %d %s", code, body)
+	}
+	var out struct {
+		DesiredPolicyVersion int32    `json:"desired_policy_version"`
+		PendingJobIds        []string `json:"pending_job_ids"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.DesiredPolicyVersion == 0 {
+		t.Fatal("desired_policy_version must be non-zero when DAL has a policy")
+	}
+	if out.DesiredPolicyVersion != 2 {
+		t.Fatalf("desired_policy_version = %d, want 2", out.DesiredPolicyVersion)
+	}
+	if len(out.PendingJobIds) == 0 {
+		t.Fatal("pending_job_ids must be non-empty when DAL has pending jobs")
+	}
+	if out.PendingJobIds[0] != job.ID {
+		t.Fatalf("pending_job_ids = %#v, want %q", out.PendingJobIds, job.ID)
 	}
 }
 

@@ -300,3 +300,92 @@ func TestRedactSecret(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestLoopReusesClientWhenBackendURLUnchanged(t *testing.T) {
+	t.Parallel()
+	cfg := testCfg("http://127.0.0.1:9", 1)
+	logs := &logBuf{}
+	fc := &fakeClient{}
+	var builds atomic.Int32
+	loop := &Loop{
+		Version: "0.0.1-dev",
+		Config:  &cfg,
+		Log:     logs,
+		Clock:   RealClock{},
+		Host:    fakeHost{},
+		NewClient: func(url string) (HeartbeatClient, error) {
+			builds.Add(1)
+			if url != cfg.BackendURL {
+				t.Fatalf("url = %q", url)
+			}
+			return fc, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for fc.beats.Load() < 3 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("beats = %d", fc.beats.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+	if builds.Load() != 1 {
+		t.Fatalf("NewClient calls = %d, want 1 (reuse when backend_url unchanged)", builds.Load())
+	}
+}
+
+func TestLoopContextCanceledBeatIsSilent(t *testing.T) {
+	t.Parallel()
+	cfg := testCfg("http://127.0.0.1:9", 60)
+	logs := &logBuf{}
+	fc := &fakeClient{err: context.Canceled}
+	loop := &Loop{
+		Version: "0.0.1-dev",
+		Config:  &cfg,
+		Log:     logs,
+		Clock:   RealClock{},
+		Host:    fakeHost{},
+		NewClient: func(string) (HeartbeatClient, error) {
+			return fc, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for fc.beats.Load() < 1 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("no beat")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+	if strings.Contains(logs.joined(), "beat failed") {
+		t.Fatalf("context.Canceled must not log beat failed: %s", logs.joined())
+	}
+}

@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,7 +10,9 @@ import (
 
 	"github.com/barzoj/dad-joke/internal/ratelimit"
 	"github.com/barzoj/dad-joke/internal/server"
+	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/barzoj/dad-joke/internal/store/memory"
+	"github.com/barzoj/dad-joke/internal/tokenhash"
 	"github.com/google/uuid"
 )
 
@@ -332,4 +335,197 @@ func TestLocalAuth_SessionRejectedOnAgentAPI(t *testing.T) {
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
+}
+
+func TestLocalAuth_CookieOnlyMeAndLogout(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	secure := false
+	base := startTestServer(t, st, server.Config{CookieSecure: &secure})
+	email := "cookie-" + uuid.NewString()[:8] + "@example.com"
+	code, hdr, body := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": email, "password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register: %d %s", code, body)
+	}
+	cookie := sessionCookieValue(t, hdr)
+
+	// Cookie-only /v1/auth/me (no Authorization header).
+	req, err := http.NewRequest(http.MethodGet, base+"/v1/auth/me", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "dj_session="+cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("cookie me: %d %s", res.StatusCode, raw)
+	}
+
+	// Cookie-only logout.
+	req, err = http.NewRequest(http.MethodPost, base+"/v1/auth/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "dj_session="+cookie)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("cookie logout: %d", res.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, base+"/v1/auth/me", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", "dj_session="+cookie)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("me after cookie logout: %d %s", res.StatusCode, raw)
+	}
+}
+
+func TestLocalAuth_BearerTakesPrecedenceOverCookie(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	secure := false
+	base := startTestServer(t, st, server.Config{CookieSecure: &secure})
+
+	code, hdrA, bodyA := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": "a-" + uuid.NewString()[:8] + "@example.com", "password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register A: %d %s", code, bodyA)
+	}
+	cookieA := sessionCookieValue(t, hdrA)
+
+	code, _, bodyB := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": "b-" + uuid.NewString()[:8] + "@example.com", "password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register B: %d %s", code, bodyB)
+	}
+	var sessB struct {
+		AccessToken string `json:"access_token"`
+		User        struct {
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(bodyB, &sessB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Present both: Bearer B must win over Cookie A.
+	req, err := http.NewRequest(http.MethodGet, base+"/v1/auth/me", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessB.AccessToken)
+	req.Header.Set("Cookie", "dj_session="+cookieA)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("me: %d %s", res.StatusCode, raw)
+	}
+	var me struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(raw, &me); err != nil {
+		t.Fatal(err)
+	}
+	if me.Email != sessB.User.Email {
+		t.Fatalf("Bearer did not take precedence: got %q want %q", me.Email, sessB.User.Email)
+	}
+}
+
+func TestLocalAuth_ExpiredSession401(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	base := startTestServer(t, st, server.Config{Clock: func() time.Time { return now }})
+
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": "exp-" + uuid.NewString()[:8] + "@example.com", "password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register: %d %s", code, body)
+	}
+	var created struct {
+		User struct {
+			ID       string `json:"id"`
+			TenantID string `json:"tenant_id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, hash, err := tokenhash.GenerateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := now.Add(-time.Hour)
+	if err := st.Sessions().Create(t.Context(), &store.Session{
+		UserID:    created.User.ID,
+		TenantID:  created.User.TenantID,
+		Hash:      hash,
+		CreatedAt: past,
+		ExpiresAt: past,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, body = doJSON(t, http.MethodGet, base+"/v1/auth/me", raw, nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("expired session: %d %s", code, body)
+	}
+	assertErrorResponse(t, body)
+}
+
+func TestLocalAuth_ShortPassword400(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	base := startTestServer(t, st, server.Config{})
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email": "short-" + uuid.NewString()[:8] + "@example.com", "password": "short",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d %s", code, body)
+	}
+	assertErrorResponse(t, body)
+}
+
+func sessionCookieValue(t *testing.T, hdr http.Header) string {
+	t.Helper()
+	sc := hdr.Get("Set-Cookie")
+	const prefix = "dj_session="
+	idx := strings.Index(sc, prefix)
+	if idx < 0 {
+		t.Fatalf("Set-Cookie missing dj_session: %q", sc)
+	}
+	rest := sc[idx+len(prefix):]
+	if end := strings.IndexByte(rest, ';'); end >= 0 {
+		rest = rest[:end]
+	}
+	if rest == "" {
+		t.Fatal("empty session cookie")
+	}
+	return rest
 }

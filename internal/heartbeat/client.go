@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,7 +45,8 @@ func newHTTPClient() *http.Client {
 }
 
 // checkRedirect re-validates every redirect target and strips Authorization
-// when the host changes so Bearer credentials never follow a cross-host hop.
+// when the host or scheme changes so Bearer credentials never follow a
+// cross-origin hop (including http→https on the same host).
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxHTTPRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
@@ -56,15 +58,19 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("redirect blocked: %w", err)
 	}
 	if len(via) > 0 && via[0].URL != nil {
-		if !sameOriginHost(via[0].URL.Host, req.URL.Host) {
+		if !sameOrigin(via[0].URL, req.URL) {
 			req.Header.Del("Authorization")
 		}
 	}
 	return nil
 }
 
-func sameOriginHost(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(a.Scheme), strings.TrimSpace(b.Scheme)) &&
+		strings.EqualFold(strings.TrimSpace(a.Host), strings.TrimSpace(b.Host))
 }
 
 // bearerEditor attaches Authorization: Bearer <token> without logging the secret.

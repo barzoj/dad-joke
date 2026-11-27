@@ -55,13 +55,24 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mongo: connect: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Do not nest a shorter ping deadline when the caller already set one
+	// (e.g. 30s test budgets under parallel go test load).
+	pingCtx, cancel := pingContext(ctx, 10*time.Second)
 	defer cancel()
 	if err := client.Ping(pingCtx, readpref.Primary()); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, fmt.Errorf("mongo: ping: %w", err)
 	}
 	return &Store{client: client, db: client.Database(dbName)}, nil
+}
+
+// pingContext returns ctx unchanged when it already has a deadline; otherwise
+// wraps it with a defaultTimeout so production Open still fails closed promptly.
+func pingContext(ctx context.Context, defaultTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultTimeout)
 }
 
 // Ping implements store.Pinger.
