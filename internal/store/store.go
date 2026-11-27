@@ -23,6 +23,8 @@ type TenantStore interface {
 	Create(ctx context.Context, t *Tenant) error
 	GetByID(ctx context.Context, id string) (*Tenant, error)
 	GetByName(ctx context.Context, name string) (*Tenant, error)
+	// Delete removes a tenant by id (compensating rollback for failed registration).
+	Delete(ctx context.Context, id string) error
 }
 
 // UserStore persists users and external identities.
@@ -32,6 +34,14 @@ type UserStore interface {
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	CreateIdentity(ctx context.Context, id *UserIdentity) error
 	GetIdentity(ctx context.Context, provider, subject string) (*UserIdentity, error)
+}
+
+// SessionStore persists hashed user session credentials.
+type SessionStore interface {
+	Create(ctx context.Context, s *Session) error
+	GetByHash(ctx context.Context, hash string) (*Session, error)
+	GetByID(ctx context.Context, id string) (*Session, error)
+	Revoke(ctx context.Context, id string, at time.Time) error
 }
 
 // TokenStore persists hashed agent tokens and control-plane PATs.
@@ -110,6 +120,7 @@ type Store interface {
 
 	Tenants() TenantStore
 	Users() UserStore
+	Sessions() SessionStore
 	Tokens() TokenStore
 	Machines() MachineStore
 	Policies() PolicyStore

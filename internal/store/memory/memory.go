@@ -15,36 +15,40 @@ import (
 
 // Store is a mutex-guarded in-memory Store.
 type Store struct {
-	mu        sync.Mutex
-	pingErr   error
-	tenants   map[string]store.Tenant
-	byName    map[string]string
-	users     map[string]store.User
-	byEmail   map[string]string
-	idents    map[string]store.UserIdentity // provider\0subject
-	tokens    map[string]store.Token
-	tokenHash map[string]string // kind+"|"+hash -> id
-	machines  map[string]store.Machine
-	policies  map[string]store.Policy
-	jobs      map[string]store.Job
-	events    map[string]store.Event // tenant|machine|event_id
-	audits    []store.AuditEntry
+	mu          sync.Mutex
+	pingErr     error
+	tenants     map[string]store.Tenant
+	byName      map[string]string
+	users       map[string]store.User
+	byEmail     map[string]string
+	idents      map[string]store.UserIdentity // provider\0subject
+	sessions    map[string]store.Session
+	sessionHash map[string]string // hash -> id
+	tokens      map[string]store.Token
+	tokenHash   map[string]string // kind+"|"+hash -> id
+	machines    map[string]store.Machine
+	policies    map[string]store.Policy
+	jobs        map[string]store.Job
+	events      map[string]store.Event // tenant|machine|event_id
+	audits      []store.AuditEntry
 }
 
 // New returns an empty memory Store.
 func New() *Store {
 	return &Store{
-		tenants:   make(map[string]store.Tenant),
-		byName:    make(map[string]string),
-		users:     make(map[string]store.User),
-		byEmail:   make(map[string]string),
-		idents:    make(map[string]store.UserIdentity),
-		tokens:    make(map[string]store.Token),
-		tokenHash: make(map[string]string),
-		machines:  make(map[string]store.Machine),
-		policies:  make(map[string]store.Policy),
-		jobs:      make(map[string]store.Job),
-		events:    make(map[string]store.Event),
+		tenants:     make(map[string]store.Tenant),
+		byName:      make(map[string]string),
+		users:       make(map[string]store.User),
+		byEmail:     make(map[string]string),
+		idents:      make(map[string]store.UserIdentity),
+		sessions:    make(map[string]store.Session),
+		sessionHash: make(map[string]string),
+		tokens:      make(map[string]store.Token),
+		tokenHash:   make(map[string]string),
+		machines:    make(map[string]store.Machine),
+		policies:    make(map[string]store.Policy),
+		jobs:        make(map[string]store.Job),
+		events:      make(map[string]store.Event),
 	}
 }
 
@@ -67,6 +71,7 @@ func (s *Store) Close(context.Context) error { return nil }
 
 func (s *Store) Tenants() store.TenantStore   { return tenantStore{s} }
 func (s *Store) Users() store.UserStore       { return userStore{s} }
+func (s *Store) Sessions() store.SessionStore { return sessionStore{s} }
 func (s *Store) Tokens() store.TokenStore     { return tokenStore{s} }
 func (s *Store) Machines() store.MachineStore { return machineStore{s} }
 func (s *Store) Policies() store.PolicyStore  { return policyStore{s} }
@@ -123,6 +128,18 @@ func (t tenantStore) GetByName(_ context.Context, name string) (*store.Tenant, e
 	}
 	cp := t.s.tenants[id]
 	return &cp, nil
+}
+
+func (t tenantStore) Delete(_ context.Context, id string) error {
+	t.s.mu.Lock()
+	defer t.s.mu.Unlock()
+	ten, ok := t.s.tenants[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	delete(t.s.tenants, id)
+	delete(t.s.byName, ten.Name)
+	return nil
 }
 
 type userStore struct{ s *Store }
@@ -204,6 +221,69 @@ func (u userStore) GetIdentity(_ context.Context, provider, subject string) (*st
 	}
 	cp := id
 	return &cp, nil
+}
+
+type sessionStore struct{ s *Store }
+
+func (ss sessionStore) Create(_ context.Context, ses *store.Session) error {
+	if ses == nil || ses.UserID == "" || ses.TenantID == "" || ses.Hash == "" {
+		return store.ErrInvalid
+	}
+	ss.s.mu.Lock()
+	defer ss.s.mu.Unlock()
+	if _, ok := ss.s.sessionHash[ses.Hash]; ok {
+		return store.ErrConflict
+	}
+	cp := *ses
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	if _, ok := ss.s.sessions[cp.ID]; ok {
+		return store.ErrConflict
+	}
+	ss.s.sessions[cp.ID] = cp
+	ss.s.sessionHash[cp.Hash] = cp.ID
+	*ses = cp
+	return nil
+}
+
+func (ss sessionStore) GetByHash(_ context.Context, hash string) (*store.Session, error) {
+	ss.s.mu.Lock()
+	defer ss.s.mu.Unlock()
+	id, ok := ss.s.sessionHash[hash]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := ss.s.sessions[id]
+	return &cp, nil
+}
+
+func (ss sessionStore) GetByID(_ context.Context, id string) (*store.Session, error) {
+	ss.s.mu.Lock()
+	defer ss.s.mu.Unlock()
+	cp, ok := ss.s.sessions[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return &cp, nil
+}
+
+func (ss sessionStore) Revoke(_ context.Context, id string, at time.Time) error {
+	ss.s.mu.Lock()
+	defer ss.s.mu.Unlock()
+	ses, ok := ss.s.sessions[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if ses.RevokedAt == nil {
+		ts := at.UTC()
+		ses.RevokedAt = &ts
+		ss.s.sessions[id] = ses
+	}
+	return nil
 }
 
 type tokenStore struct{ s *Store }

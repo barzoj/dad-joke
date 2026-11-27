@@ -62,11 +62,11 @@ Shared error shapes live in `api/common/errors.tsp` and are imported by both ser
 | Surface | Security | Notable routes |
 | --- | --- | --- |
 | **AgentAPI** | `AgentBearerAuth` (HTTP Bearer `dj_agt_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST /v1/heartbeat` — machine identity + applied policy; response includes `server_time`, `desired_policy_version`, `pending_job_ids` |
-| **ControlAPI** | `ControlBearerAuth` (HTTP Bearer `dj_pat_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST/GET/DELETE /v1/agent-tokens`, `POST/GET/DELETE /v1/api-keys`, `GET /v1/machines`, `GET /v1/machines/{machine_id}` |
+| **ControlAPI** | `ControlBearerAuth` (HTTP Bearer `dj_pat_...` **or** user session `dj_ses_...` / `dj_session` cookie); `GET /healthz`, `POST /v1/auth/register`, `POST /v1/auth/login` use `@useAuth(NoAuth)` | `POST /v1/auth/register\|login\|logout`, `GET /v1/auth/me`, `POST/GET/DELETE /v1/agent-tokens`, `POST/GET/DELETE /v1/api-keys`, `GET /v1/machines`, `GET /v1/machines/{machine_id}` |
 
-Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400` / `401` / `403` / `404` / `409` / `413` / `429` / `500`. `429` responses declare a `Retry-After` header.
+Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400` / `401` / `403` / `404` / `409` / `413` / `429` / `500` / `503`. `429` responses declare a `Retry-After` header.
 
-Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, `CreatedApiKey`) and are absent from every `GET` summary/list model. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
+Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, `CreatedApiKey`) and register/login session responses (`AuthSession.access_token`); they are absent from every `GET` summary/list model. Domain endpoints are added in TypeSpec first, then regenerated—no parallel hand-written HTTP contracts.
 
 ## Control-plane server & data layer (current)
 
@@ -74,25 +74,38 @@ Raw token secrets appear **only** on `201 Created` models (`CreatedAgentToken`, 
 
 Domain models are plain Go structs (string UUIDs, no `bson` tags, no `ObjectID`). Repository interfaces live in `internal/store`:
 
-`TenantStore`, `UserStore`, `TokenStore`, `MachineStore`, `PolicyStore`, `JobStore`, `EventStore`, `AuditStore`, plus `Pinger` and a `Store` facade (`EnsureIndexes`, `Close`).
+`TenantStore`, `UserStore`, `SessionStore`, `TokenStore`, `MachineStore`, `PolicyStore`, `JobStore`, `EventStore`, `AuditStore`, plus `Pinger` and a `Store` facade (`EnsureIndexes`, `Close`).
 
 HTTP handlers and product logic talk only to these interfaces. An architecture test (`internal/archtest`) fails CI if any package outside `internal/store/mongo` imports `go.mongodb.org/mongo-driver`.
 
+Collections / models of note:
+
+- `users`: `id`, `tenant_id`, `email` (lowercased/trimmed, unique), `password_hash` (argon2id; never in JSON/logs), `created_at`
+- `user_identities`: `id`, `user_id`, `provider`, `subject` (unique on `(provider, subject)`), `created_at` — schema ready for a later Google OAuth link; no OAuth handlers yet
+- `sessions`: hashed `dj_ses_...` credentials with expiry and revoke timestamp
+
 ### MongoDB implementation (`internal/store/mongo`)
 
-Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay inside the package. `EnsureIndexes(ctx)` creates idempotent unique/compound/TTL indexes at startup (tenant name, token kind+hash, event idempotency, event TTL, audit listing, etc.).
+Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay inside the package. `EnsureIndexes(ctx)` creates idempotent unique/compound/TTL indexes at startup (tenant name, user email, identity provider+subject, session hash, token kind+hash, event idempotency, event TTL, audit listing, etc.).
 
 ### `cmd/server`
 
 - HTTP server with `GET /healthz`: `200` + `{"status":"ok"}` when MongoDB `Ping` succeeds; `503` + `{"status":"unavailable"}` when it fails. Unauthenticated by design.
+- **Local email/password auth** (ControlAPI):
+  - `POST /v1/auth/register` atomically creates a tenant + user (`argon2id` via `golang.org/x/crypto/argon2`, random salt). Duplicate email → `409` with compensating tenant delete (no orphan). `ALLOW_SIGNUP=false` → `403`.
+  - `POST /v1/auth/login` verifies with constant-time compare; unknown email runs a dummy argon2id verify so timing matches wrong-password. Identical `401` body for both cases. Failed logins are rate-limited per IP and per email (`429` + `Retry-After`); store infra errors return `503` without burning the budget.
+  - Successful register/login issues a revocable `dj_ses_...` session (hashed at rest) returned as `access_token` and as an `HttpOnly; SameSite=Lax` cookie (`Secure` default `true`, overridable with `COOKIE_SECURE=false` for local HTTP).
+  - `POST /v1/auth/logout` revokes the session; subsequent `/v1/auth/me` with that session is `401`.
+  - `GET /v1/auth/me` returns the user profile for a session (never `password_hash`).
 - **Zero-Trust auth middleware** (process-local):
-  - AgentAPI routes (`POST /v1/heartbeat`): `Authorization: Bearer dj_agt_...` only; SHA-256 verified via `TokenStore.GetByHash` with constant-time compare; revoked/expired/wrong-prefix → `401` `ErrorResponse`.
-  - ControlAPI routes (`/v1/agent-tokens`, `/v1/api-keys`, `/v1/machines`): `Authorization: Bearer dj_pat_...` only; same verification; cross-prefix tokens → `401`.
-  - Successful auth puts `tenant_id` and `token_id` on `context.Context` (`internal/authctx`); handlers are strictly tenant-scoped (cross-tenant → `404`).
-- **Token CRUD** (ControlAPI): create/list/delete agent tokens and API keys. Raw secret returned only on `201 Created`; at rest only SHA-256 hash + non-secret prefix. Issue and revoke append to `audit_logs` (`internal/audit`; hooks also exist for policy create / script launch).
-- **Rate limits** (`internal/ratelimit`): in-memory sliding window per process (no Redis), injectable clock, bounded key set. Auth failures are limited per IP and per `wantKind`+token-hash (wrong-prefix probes charge IP only, so they cannot poison the other API's hash bucket). Mutating requests are limited per token id. Exhaustion returns `429` + `Retry-After`. DAL/infra errors from token lookup return `503` without burning auth-failure budget.
+  - AgentAPI routes (`POST /v1/heartbeat`): `Authorization: Bearer dj_agt_...` only; SHA-256 verified via `TokenStore.GetByHash` with constant-time compare; revoked/expired/wrong-prefix (including user sessions) → `401` `ErrorResponse`.
+  - ControlAPI routes: `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie; same verification; agent tokens → `401`.
+  - Successful auth puts `tenant_id` and actor id on `context.Context` (`internal/authctx`); user sessions also set `user_id` / `session_id`. Handlers are strictly tenant-scoped (cross-tenant → `404`).
+- **Token CRUD** (ControlAPI): create/list/delete agent tokens and API keys (session or PAT). Raw secret returned only on `201 Created`; at rest only SHA-256 hash + non-secret prefix. Issue and revoke append to `audit_logs` (`internal/audit`; hooks also exist for policy create / script launch).
+- **Rate limits** (`internal/ratelimit`): in-memory sliding window per process (no Redis), injectable clock, bounded key set. Auth failures are limited per IP and per `wantKind`+token-hash (wrong-prefix probes charge IP only, so they cannot poison the other API's hash bucket). Mutating requests are limited per token/session id. Exhaustion returns `429` + `Retry-After`. DAL/infra errors from token/session lookup return `503` without burning auth-failure budget.
 - Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`), strict server timeouts, `http.MaxBytesReader` body limit, graceful shutdown on `SIGINT`/`SIGTERM`.
 - `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.
+- `cmd/server create-user --email ... --password ... [--tenant-name ...]` creates a tenant + argon2id user in MongoDB even when `ALLOW_SIGNUP=false` (password may also come from `DAD_JOKE_CREATE_USER_PASSWORD`).
 
 ### Hardened container (dev)
 

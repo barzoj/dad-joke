@@ -83,6 +83,13 @@ model InternalServerError {
   @body body: ErrorResponse;
 }
 
+/** 503 Service Unavailable */
+model ServiceUnavailableError {
+  @statusCode _: 503;
+  @header contentType: "application/json";
+  @body body: ErrorResponse;
+}
+
 /** Standard error union for authenticated mutating/read operations. */
 alias StandardErrors = BadRequestError
   | UnauthorizedError
@@ -91,4 +98,5 @@ alias StandardErrors = BadRequestError
   | ConflictError
   | PayloadTooLargeError
   | TooManyRequestsError
-  | InternalServerError;
+  | InternalServerError
+  | ServiceUnavailableError;

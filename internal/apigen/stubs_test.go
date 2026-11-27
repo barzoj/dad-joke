@@ -187,6 +187,68 @@ func (s controlStub) GetMachine(_ context.Context, req controlapi.GetMachineRequ
 	return controlapi.GetMachine200JSONResponse(m), nil
 }
 
+func (s controlStub) Register(_ context.Context, req controlapi.RegisterRequestObject) (controlapi.RegisterResponseObject, error) {
+	email := openapi_types.Email("parent@example.com")
+	if req.Body != nil {
+		email = req.Body.Email
+	}
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	return controlapi.Register201JSONResponse{
+		Body: controlapi.AuthSession{
+			AccessToken: "dj_ses_" + strings.Repeat("c", 64),
+			TokenType:   controlapi.Bearer,
+			ExpiresAt:   now.Add(24 * time.Hour),
+			User: controlapi.UserMe{
+				Id:       mustUUID("44444444-4444-4444-8444-444444444444"),
+				Email:    email,
+				TenantId: mustUUID("55555555-5555-4555-8555-555555555555"),
+			},
+		},
+		Headers: controlapi.Register201ResponseHeaders{
+			SetCookie: "dj_session=dj_ses_stub; Path=/; HttpOnly; SameSite=Lax; Secure",
+		},
+	}, nil
+}
+
+func (s controlStub) Login(_ context.Context, req controlapi.LoginRequestObject) (controlapi.LoginResponseObject, error) {
+	email := openapi_types.Email("parent@example.com")
+	if req.Body != nil {
+		email = req.Body.Email
+	}
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	return controlapi.Login200JSONResponse{
+		Body: controlapi.AuthSession{
+			AccessToken: "dj_ses_" + strings.Repeat("d", 64),
+			TokenType:   controlapi.Bearer,
+			ExpiresAt:   now.Add(24 * time.Hour),
+			User: controlapi.UserMe{
+				Id:       mustUUID("44444444-4444-4444-8444-444444444444"),
+				Email:    email,
+				TenantId: mustUUID("55555555-5555-4555-8555-555555555555"),
+			},
+		},
+		Headers: controlapi.Login200ResponseHeaders{
+			SetCookie: "dj_session=dj_ses_stub; Path=/; HttpOnly; SameSite=Lax; Secure",
+		},
+	}, nil
+}
+
+func (s controlStub) Logout(context.Context, controlapi.LogoutRequestObject) (controlapi.LogoutResponseObject, error) {
+	return controlapi.Logout204Response{
+		Headers: controlapi.Logout204ResponseHeaders{
+			SetCookie: "dj_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure",
+		},
+	}, nil
+}
+
+func (s controlStub) GetMe(context.Context, controlapi.GetMeRequestObject) (controlapi.GetMeResponseObject, error) {
+	return controlapi.GetMe200JSONResponse{
+		Id:       mustUUID("44444444-4444-4444-8444-444444444444"),
+		Email:    "parent@example.com",
+		TenantId: mustUUID("55555555-5555-4555-8555-555555555555"),
+	}, nil
+}
+
 func sampleMachine() controlapi.Machine {
 	return controlapi.Machine{
 		MachineId:            mustUUID("33333333-3333-4333-8333-333333333333"),

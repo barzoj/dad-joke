@@ -9,6 +9,7 @@ import (
 	"github.com/barzoj/dad-joke/gen/go/controlapi"
 	"github.com/barzoj/dad-joke/internal/audit"
 	"github.com/barzoj/dad-joke/internal/authctx"
+	"github.com/barzoj/dad-joke/internal/ratelimit"
 	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/barzoj/dad-joke/internal/tokenhash"
 	"github.com/google/uuid"
@@ -21,6 +22,10 @@ type ControlAPI struct {
 	Audit  audit.Logger
 	Clock  func() time.Time
 	Online time.Duration // machine considered online if last_seen within this window
+
+	AllowSignup   bool               // when false, Register returns 403
+	CookieSecure  bool               // Secure flag on session cookies (default true)
+	LoginFailures *ratelimit.Limiter // per-IP and per-email failed logins
 }
 
 func (c *ControlAPI) now() time.Time {

@@ -1,7 +1,8 @@
-// Command server is the Dad Joke control-plane HTTP server skeleton.
+// Command server is the Dad Joke control-plane HTTP server.
 //
-//	server                     run HTTP (:8080) with GET /healthz
+//	server                     run HTTP (:8080) with ControlAPI + AgentAPI
 //	server bootstrap --tenant  create a tenant and first dj_pat_ API key
+//	server create-user         create a tenant + email/password user
 package main
 
 import (
@@ -16,8 +17,9 @@ import (
 	"time"
 
 	"github.com/barzoj/dad-joke/internal/bootstrap"
-	mongostore "github.com/barzoj/dad-joke/internal/store/mongo"
+	"github.com/barzoj/dad-joke/internal/createuser"
 	"github.com/barzoj/dad-joke/internal/server"
+	mongostore "github.com/barzoj/dad-joke/internal/store/mongo"
 )
 
 func main() {
@@ -25,8 +27,13 @@ func main() {
 }
 
 func run(args []string) int {
-	if len(args) > 0 && args[0] == "bootstrap" {
-		return runBootstrap(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case "bootstrap":
+			return runBootstrap(args[1:])
+		case "create-user":
+			return runCreateUser(args[1:])
+		}
 	}
 	return runServe(args)
 }
@@ -65,10 +72,14 @@ func runServe(args []string) int {
 		return 1
 	}
 
+	allowSignup := envBool("ALLOW_SIGNUP", true)
+	cookieSecure := envBool("COOKIE_SECURE", true)
 	srv, err := server.New(server.Config{
-		Addr:  *addr,
-		Store: st,
-		Log:   log.New(os.Stderr, "server: ", log.LstdFlags|log.Lmsgprefix),
+		Addr:         *addr,
+		Store:        st,
+		Log:          log.New(os.Stderr, "server: ", log.LstdFlags|log.Lmsgprefix),
+		AllowSignup:  &allowSignup,
+		CookieSecure: &cookieSecure,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
@@ -123,9 +134,70 @@ func runBootstrap(args []string) int {
 	return 0
 }
 
+func runCreateUser(args []string) int {
+	fs := flag.NewFlagSet("create-user", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	email := fs.String("email", "", "user email")
+	passFlag := fs.String("password", "", "user password (prefer DAD_JOKE_CREATE_USER_PASSWORD env)")
+	tenantName := fs.String("tenant-name", "", "optional tenant name (default: email)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*email) == "" {
+		fmt.Fprintln(os.Stderr, "create-user: --email is required")
+		return 2
+	}
+	pass := strings.TrimSpace(*passFlag)
+	if pass == "" {
+		pass = strings.TrimSpace(os.Getenv("DAD_JOKE_CREATE_USER_PASSWORD"))
+	}
+	if pass == "" {
+		fmt.Fprintln(os.Stderr, "create-user: password via --password or DAD_JOKE_CREATE_USER_PASSWORD is required")
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := mongostore.Open(ctx, mongoConfigFromEnv())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create-user: open store: %v\n", err)
+		return 1
+	}
+	defer func() { _ = st.Close(context.Background()) }()
+
+	if err := st.EnsureIndexes(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "create-user: ensure indexes: %v\n", err)
+		return 1
+	}
+
+	res, err := createuser.Run(ctx, st, *email, pass, *tenantName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create-user: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(os.Stdout, "created user %s (tenant %s)\n", res.UserID, res.TenantID)
+	return 0
+}
+
 func envOr(key, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

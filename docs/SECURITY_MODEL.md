@@ -16,7 +16,7 @@ Therefore the product assumes the network and backends are hostile unless crypto
 | Invariant | Requirement |
 | --- | --- |
 | Tenant isolation | Every persisted record and API decision is scoped by `tenant_id`. Cross-tenant reads/writes are impossible (return not-found, never leak existence across tenants). |
-| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane credentials use `dj_pat_`. Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. See [Token formats](#token-formats-dj_agt--dj_pat_) below. |
+| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane API keys use `dj_pat_`; user sessions use `dj_ses_` (cookie `dj_session`). Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. User passwords use **argon2id** (never returned in API JSON). See [Token formats](#token-formats-dj_agt--dj_pat_) below. |
 | Transport | Outbound agent/control HTTPS uses system CA verification. Cleartext is rejected except loopback test doubles. |
 | Job containment | Remote jobs have short TTLs, run inside a Windows Job Object with hard timeouts, and truncate stdout/stderr (output caps). |
 | Audit | Sensitive actions append to append-only `audit_logs` (token issue/revoke, policy mutations, job launch/result). |
@@ -35,13 +35,14 @@ HTTP contracts freeze a clear role split and Secret Scanning–friendly prefixes
 | --- | --- | --- | --- | --- |
 | `dj_agt_` | ControlAPI `POST /v1/agent-tokens` | AgentAPI (`AgentBearerAuth`) | **256-bit** opaque secret after the prefix | On-device agent ↔ control plane |
 | `dj_pat_` | ControlAPI `POST /v1/api-keys` | ControlAPI (`ControlBearerAuth`), MCP, automation | **256-bit** opaque secret after the prefix | Parent/operator control plane |
+| `dj_ses_` | ControlAPI `POST /v1/auth/register` / `login` | ControlAPI (Bearer and/or `dj_session` cookie) | **256-bit** opaque secret after the prefix | Interactive user session (revocable) |
 
 Rules that bind every implementation of these contracts:
 
-- Unique prefixes keep agent and control credentials non-interchangeable and detectable by secret-scanning patterns.
-- The **raw secret** is returned exactly once in the `201 Created` response (`CreatedAgentToken` / `CreatedApiKey`) and is **absent** from every `GET` list/summary model.
-- At rest: store **SHA-256 hashes only**; compare in constant time; never log the raw value or write it to audit payloads.
-- `GET /healthz` on both APIs remains unauthenticated; all `/v1/...` routes require the matching bearer scheme.
+- Unique prefixes keep agent, PAT, and session credentials non-interchangeable and detectable by secret-scanning patterns.
+- The **raw secret** for API keys/agent tokens is returned exactly once in the `201 Created` response (`CreatedAgentToken` / `CreatedApiKey`) and is **absent** from every `GET` list/summary model. Session secrets are returned on register/login (`AuthSession.access_token`) and as an HttpOnly cookie; `POST /v1/auth/logout` revokes them.
+- At rest: store **SHA-256 hashes only** for tokens/sessions; compare in constant time; never log the raw value or write it to audit payloads. User `password_hash` is argon2id and never appears in API DTOs or logs.
+- `GET /healthz` on both APIs remains unauthenticated; `POST /v1/auth/register` and `POST /v1/auth/login` are unauthenticated; other `/v1/...` routes require the matching credential.
 
 ## Already implemented (`v0.0.x`)
 
@@ -55,18 +56,19 @@ These controls exist in the current Windows agent / repository:
 - **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), `golangci-lint`, Renovate config validation, and Dependency Review (high/critical CVEs + AGPL-incompatible licenses) on PRs/`main`/weekly as applicable.
 - **HTTP auth/token/heartbeat/machine contracts** — TypeSpec `AgentBearerAuth` / `ControlBearerAuth`, agent-token and API-key CRUD shapes (raw secret only on `201 Created`), `POST /v1/heartbeat`, and machine listing; unified `ErrorResponse` including `429` + `Retry-After`.
 - **Server DAL + bootstrap** — `internal/store` domain interfaces with MongoDB isolated in `internal/store/mongo`; `bootstrap` stores SHA-256 hashes only for `dj_pat_...` keys; hardened non-root distroless container + Trivy image scan in CI.
-- **Zero-Trust HTTP auth** — middleware enforces prefix split (`dj_agt_` vs `dj_pat_`), SHA-256 + constant-time verify via DAL, tenant/token context injection, immediate revoke → `401`, cross-tenant token ops → `404`, append-only `audit_logs` for token issue/revoke (with policy/script audit hooks), and in-memory per-IP / per-token rate limits returning `429` + `Retry-After`.
+- **Zero-Trust HTTP auth** — middleware enforces prefix split (`dj_agt_` vs `dj_pat_` / `dj_ses_`), SHA-256 + constant-time verify via DAL, tenant/token/user context injection, immediate revoke → `401`, cross-tenant token ops → `404`, append-only `audit_logs` for token issue/revoke (with policy/script audit hooks), and in-memory per-IP / per-token rate limits returning `429` + `Retry-After`.
+- **Local email/password auth** — argon2id password hashing; register creates tenant+user with orphan-tenant rollback on conflict; login anti-enumeration (dummy verify + identical `401`); failed-login rate limits per IP/email; `ALLOW_SIGNUP` gate; `create-user` CLI for ops when signup is closed.
 
 ## Invariant contracts (enforced as components land)
 
 The following are **binding design contracts**. New packages must implement them when the corresponding surface appears; they are not optional backlog ideas:
 
 - Strict `tenant_id` isolation across AgentAPI, ControlAPI, and storage (**implemented** for auth + token CRUD + machine reads).
-- Prefixed tokens (`dj_agt_` / `dj_pat_`), hashed at rest, never logged (**implemented** in HTTP middleware + DAL).
+- Prefixed tokens (`dj_agt_` / `dj_pat_` / `dj_ses_`), hashed at rest, never logged (**implemented** in HTTP middleware + DAL).
 - Append-only `audit_logs` for sensitive operations (**implemented** for token issue/revoke; hooks ready for policy/script).
-- Per-IP / per-token rate limits on auth failures and mutations (**implemented**, process-local).
+- Per-IP / per-token (and per-email login) rate limits on auth failures and mutations (**implemented**, process-local).
 - Short job TTLs, Windows Job Object kill-on-timeout, and output caps for remote script execution.
 - Non-root hardened server container image (**implemented** for the server image).
-- Fail-closed authn/authz on every new HTTP surface (**implemented** for current `/v1/...` routes; `/healthz` remains unauthenticated).
+- Fail-closed authn/authz on every new HTTP surface (**implemented** for current `/v1/...` routes; `/healthz`, register, and login remain unauthenticated).
 
 Until a contract’s owning component exists, the invariant still constrains design reviews and API contracts so a later backend cannot quietly widen the botnet blast radius.

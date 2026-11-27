@@ -20,9 +20,12 @@ type AuthConfig struct {
 	Mutations    *ratelimit.Limiter // per-token mutating requests
 	Clock        func() time.Time
 	SkipPaths    map[string]struct{} // paths that skip auth (e.g. /healthz)
+	// AcceptSessions enables dj_ses_... Bearer / dj_session cookie auth
+	// (ControlAPI only). AgentAPI must leave this false.
+	AcceptSessions bool
 }
 
-// Authenticator verifies dj_agt_ / dj_pat_ bearer credentials.
+// Authenticator verifies dj_agt_ / dj_pat_ bearer credentials and optional sessions.
 type Authenticator struct {
 	cfg AuthConfig
 }
@@ -33,12 +36,17 @@ func NewAuthenticator(cfg AuthConfig) *Authenticator {
 		cfg.Clock = time.Now
 	}
 	if cfg.SkipPaths == nil {
-		cfg.SkipPaths = map[string]struct{}{"/healthz": {}}
+		cfg.SkipPaths = map[string]struct{}{
+			"/healthz":          {},
+			"/v1/auth/register": {},
+			"/v1/auth/login":    {},
+		}
 	}
 	return &Authenticator{cfg: cfg}
 }
 
-// Middleware returns HTTP middleware that accepts only Bearer tokens of wantKind.
+// Middleware returns HTTP middleware that accepts Bearer tokens of wantKind
+// (and user sessions when AcceptSessions is set and wantKind is PAT).
 func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,13 +66,19 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 				}
 			}
 
-			raw, ok := bearerToken(r)
-			if !ok {
+			raw, fromCookie := sessionOrBearer(r)
+			if raw == "" {
 				a.recordAuthFailure(failKey)
 				if a.authFailureLimited(w, reqID, failKey) {
 					return
 				}
 				writeUnauthorized(w, reqID)
+				return
+			}
+
+			// User session path (ControlAPI only).
+			if a.cfg.AcceptSessions && (tokenhash.IsSession(raw) || fromCookie) {
+				a.authenticateSession(w, r, next, raw, failKey, reqID)
 				return
 			}
 
@@ -77,6 +91,7 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 			if kind != wantKind {
 				// Wrong prefix: charge IP only. Do not touch the hash bucket —
 				// that credential is legitimate on the other API surface.
+				// Session tokens on AgentAPI (AcceptSessions=false) also land here.
 				a.recordAuthFailure(failKey)
 				if a.authFailureLimited(w, reqID, failKey) {
 					return
@@ -131,6 +146,52 @@ func (a *Authenticator) Middleware(wantKind store.TokenKind) func(http.Handler) 
 	}
 }
 
+func (a *Authenticator) authenticateSession(w http.ResponseWriter, r *http.Request, next http.Handler, raw, failKey, reqID string) {
+	hash := tokenhash.Hash(raw)
+	hashFailKey := "authfail:hash:session:" + hash
+
+	if a.cfg.AuthFailures != nil {
+		if retry, exceeded := a.cfg.AuthFailures.Exceeded(hashFailKey); exceeded {
+			writeTooManyRequests(w, reqID, retry)
+			return
+		}
+	}
+
+	ses, err := a.cfg.Store.Sessions().GetByHash(r.Context(), hash)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			a.recordAuthFailure(failKey, hashFailKey)
+			if a.authFailureLimited(w, reqID, failKey) || a.authFailureLimited(w, reqID, hashFailKey) {
+				return
+			}
+			writeUnauthorized(w, reqID)
+			return
+		}
+		writeServiceUnavailable(w, reqID)
+		return
+	}
+	now := a.cfg.Clock().UTC()
+	if ses == nil || !tokenhash.EqualHash(ses.Hash, raw) || !sessionUsable(ses, now) {
+		a.recordAuthFailure(failKey, hashFailKey)
+		if a.authFailureLimited(w, reqID, failKey) || a.authFailureLimited(w, reqID, hashFailKey) {
+			return
+		}
+		writeUnauthorized(w, reqID)
+		return
+	}
+
+	if isMutating(r.Method) && a.cfg.Mutations != nil {
+		mutKey := "mut:session:" + ses.ID
+		if retry, ok := a.cfg.Mutations.Allow(mutKey); !ok {
+			writeTooManyRequests(w, reqID, retry)
+			return
+		}
+	}
+
+	ctx := authctx.WithUser(r.Context(), ses.TenantID, ses.UserID, ses.ID)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
 func (a *Authenticator) recordAuthFailure(keys ...string) {
 	if a.cfg.AuthFailures == nil {
 		return
@@ -161,6 +222,29 @@ func tokenUsable(tok *store.Token, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func sessionUsable(ses *store.Session, now time.Time) bool {
+	if ses.RevokedAt != nil {
+		return false
+	}
+	if !ses.ExpiresAt.After(now) {
+		return false
+	}
+	return true
+}
+
+// sessionOrBearer returns the credential from Authorization Bearer or dj_session cookie.
+// fromCookie is true only when the value came from the cookie (no Bearer present).
+func sessionOrBearer(r *http.Request) (raw string, fromCookie bool) {
+	if tok, ok := bearerToken(r); ok {
+		return tok, false
+	}
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c == nil || c.Value == "" {
+		return "", false
+	}
+	return c.Value, true
 }
 
 func bearerToken(r *http.Request) (string, bool) {

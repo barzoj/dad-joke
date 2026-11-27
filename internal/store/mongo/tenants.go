@@ -57,3 +57,14 @@ func (t tenantStore) GetByName(ctx context.Context, name string) (*store.Tenant,
 	}
 	return tenantFromDoc(d), nil
 }
+
+func (t tenantStore) Delete(ctx context.Context, id string) error {
+	res, err := t.s.coll(collTenants).DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}

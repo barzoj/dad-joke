@@ -213,6 +213,33 @@ func TestPolicyJobEventUser(t *testing.T) {
 	if err := st.Users().CreateIdentity(ctx, ident); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("dup identity: %v", err)
 	}
+	if err := st.Tenants().Delete(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("delete missing tenant: %v", err)
+	}
+	ten := &store.Tenant{Name: "to-delete"}
+	if err := st.Tenants().Create(ctx, ten); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tenants().Delete(ctx, ten.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ses := &store.Session{UserID: user.ID, TenantID: "t", Hash: "abc", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	if err := st.Sessions().Create(ctx, ses); err != nil {
+		t.Fatal(err)
+	}
+	gotSes, err := st.Sessions().GetByHash(ctx, "abc")
+	if err != nil || gotSes.ID != ses.ID {
+		t.Fatalf("get session: %v %+v", err, gotSes)
+	}
+	if err := st.Sessions().Revoke(ctx, ses.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	gotSes, err = st.Sessions().GetByID(ctx, ses.ID)
+	if err != nil || gotSes.RevokedAt == nil {
+		t.Fatalf("revoked: %v %+v", err, gotSes)
+	}
+
 	gotIdent, err := st.Users().GetIdentity(ctx, "google", "sub")
 	if err != nil || gotIdent.UserID != user.ID {
 		t.Fatalf("get identity: %v %+v", err, gotIdent)

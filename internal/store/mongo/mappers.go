@@ -65,6 +65,40 @@ func identityFromDoc(d userIdentityDoc) *store.UserIdentity {
 	}
 }
 
+type sessionDoc struct {
+	ID        string     `bson:"_id"`
+	UserID    string     `bson:"user_id"`
+	TenantID  string     `bson:"tenant_id"`
+	Hash      string     `bson:"hash"`
+	CreatedAt time.Time  `bson:"created_at"`
+	ExpiresAt time.Time  `bson:"expires_at"`
+	RevokedAt *time.Time `bson:"revoked_at,omitempty"`
+}
+
+func sessionToDoc(s *store.Session) sessionDoc {
+	d := sessionDoc{
+		ID: s.ID, UserID: s.UserID, TenantID: s.TenantID, Hash: s.Hash,
+		CreatedAt: s.CreatedAt.UTC(), ExpiresAt: s.ExpiresAt.UTC(),
+	}
+	if s.RevokedAt != nil {
+		u := s.RevokedAt.UTC()
+		d.RevokedAt = &u
+	}
+	return d
+}
+
+func sessionFromDoc(d sessionDoc) *store.Session {
+	s := &store.Session{
+		ID: d.ID, UserID: d.UserID, TenantID: d.TenantID, Hash: d.Hash,
+		CreatedAt: d.CreatedAt.UTC(), ExpiresAt: d.ExpiresAt.UTC(),
+	}
+	if d.RevokedAt != nil {
+		u := d.RevokedAt.UTC()
+		s.RevokedAt = &u
+	}
+	return s
+}
+
 type tokenDoc struct {
 	ID         string     `bson:"_id"`
 	TenantID   string     `bson:"tenant_id"`
@@ -135,7 +169,7 @@ func machineToDoc(m *store.Machine) machineDoc {
 	return machineDoc{
 		ID: m.ID, TenantID: m.TenantID, Hostname: m.Hostname,
 		OSVersion: m.OSVersion, AgentVersion: m.AgentVersion,
-		LastSeenAt: m.LastSeenAt.UTC(),
+		LastSeenAt:           m.LastSeenAt.UTC(),
 		AppliedPolicyVersion: m.AppliedPolicyVersion,
 		DesiredPolicyVersion: m.DesiredPolicyVersion,
 	}
@@ -145,7 +179,7 @@ func machineFromDoc(d machineDoc) *store.Machine {
 	return &store.Machine{
 		ID: d.ID, TenantID: d.TenantID, Hostname: d.Hostname,
 		OSVersion: d.OSVersion, AgentVersion: d.AgentVersion,
-		LastSeenAt: d.LastSeenAt.UTC(),
+		LastSeenAt:           d.LastSeenAt.UTC(),
 		AppliedPolicyVersion: d.AppliedPolicyVersion,
 		DesiredPolicyVersion: d.DesiredPolicyVersion,
 	}
@@ -170,7 +204,7 @@ func policyToDoc(p *store.Policy) policyDoc {
 		doc = append(json.RawMessage(nil), p.Document...)
 	}
 	return policyDoc{
-		ID: policyKey(p.TenantID, p.MachineID),
+		ID:       policyKey(p.TenantID, p.MachineID),
 		TenantID: p.TenantID, MachineID: p.MachineID,
 		Version: p.Version, Document: doc, UpdatedAt: p.UpdatedAt.UTC(),
 	}
