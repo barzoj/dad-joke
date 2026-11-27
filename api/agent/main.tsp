@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
 using TypeSpec.Http;
@@ -119,5 +120,42 @@ interface Policy {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: MachinePolicy;
+  } | StandardErrors;
+}
+
+@route("/v1/jobs")
+interface Jobs {
+  /**
+   * Atomically claim a pending job for this agent machine (`pending → running`).
+   * Second claim, wrong machine, expired, or terminal jobs → 409/404 as documented.
+   * Cross-tenant ids return 404 (never 403).
+   */
+  @post
+  @route("{id}/claim")
+  @operationId("claimJob")
+  op claim(
+    /** Job id. */
+    @path @format("uuid") id: string,
+    @body body: ClaimJobRequest
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: Job;
+  } | StandardErrors;
+
+  /**
+   * Submit the terminal result of a previously claimed job.
+   * Results for canceled/finished jobs → 409. Cross-tenant → 404.
+   * stdout/stderr over 64 KiB → 413/400.
+   */
+  @post
+  @route("{id}/result")
+  @operationId("postJobResult")
+  op postResult(
+    /** Job id. */
+    @path @format("uuid") id: string,
+    @body body: JobResultRequest
+  ): {
+    @statusCode _: 204;
   } | StandardErrors;
 }

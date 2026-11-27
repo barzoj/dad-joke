@@ -159,12 +159,12 @@ func TestPolicyJobEventUser(t *testing.T) {
 	}
 	code := 0
 	dur := int64(5)
-	if err := st.Jobs().Complete(ctx, "t", job.ID, store.JobResult{
+	if err := st.Jobs().Complete(ctx, "t", "m", job.ID, store.JobResult{
 		Status: store.JobSucceeded, ExitCode: &code, Stdout: "ok", DurationMS: &dur, FinishedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Jobs().Complete(ctx, "t", job.ID, store.JobResult{Status: store.JobFailed, FinishedAt: time.Now()}); !errors.Is(err, store.ErrConflict) {
+	if err := st.Jobs().Complete(ctx, "t", "m", job.ID, store.JobResult{Status: store.JobFailed, FinishedAt: time.Now()}); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("complete twice: %v", err)
 	}
 

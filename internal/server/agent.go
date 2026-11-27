@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/barzoj/dad-joke/gen/go/agentapi"
+	"github.com/barzoj/dad-joke/internal/audit"
 	"github.com/barzoj/dad-joke/internal/authctx"
 	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/store"
@@ -15,6 +16,7 @@ import (
 // AgentAPI implements agentapi.StrictServerInterface.
 type AgentAPI struct {
 	Store store.Store
+	Audit audit.Logger
 	Clock func() time.Time
 }
 

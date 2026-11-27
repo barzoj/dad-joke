@@ -52,3 +52,35 @@ func TestLogger_PolicyAndScriptHooks(t *testing.T) {
 		t.Fatalf("len = %d", len(entries))
 	}
 }
+
+func TestLogger_JobTransitions(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	log := audit.Logger{Store: st.Audits()}
+	ctx := context.Background()
+	if err := log.JobCreate(ctx, "ten", "actor", "j1", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.JobClaim(ctx, "ten", "actor", "j1", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.JobComplete(ctx, "ten", "actor", "j1", "m1", "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.JobCancel(ctx, "ten", "actor", "j2", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := st.Audits().ListByTenant(ctx, "ten", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("len = %d", len(entries))
+	}
+	want := []string{audit.ActionJobCreate, audit.ActionJobClaim, audit.ActionJobComplete, audit.ActionJobCancel}
+	for i, w := range want {
+		if entries[i].Action != w {
+			t.Fatalf("entries[%d]=%q want %q", i, entries[i].Action, w)
+		}
+	}
+}

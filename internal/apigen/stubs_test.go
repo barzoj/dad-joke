@@ -28,6 +28,40 @@ func (s agentStub) GetHealthz(context.Context, agentapi.GetHealthzRequestObject)
 	return agentapi.GetHealthz200JSONResponse{Status: agentapi.Ok}, nil
 }
 
+func (s agentStub) ClaimJob(_ context.Context, req agentapi.ClaimJobRequestObject) (agentapi.ClaimJobResponseObject, error) {
+	if s.mode == "unauthorized" {
+		return agentapi.ClaimJob401JSONResponse{
+			Code: "unauthorized", Message: "missing or invalid agent token", RequestId: "req-claim-401",
+		}, nil
+	}
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	machineID := mustUUID("33333333-3333-4333-8333-333333333333")
+	if req.Body != nil {
+		machineID = req.Body.MachineId
+	}
+	return agentapi.ClaimJob200JSONResponse{
+		Id:        req.Id,
+		MachineId: machineID,
+		Status:    agentapi.DadJokeCommonJobStatusRunning,
+		Payload:   "echo hi",
+		ExitCode:  nil,
+		Stdout:    "",
+		Stderr:    "",
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+		ClaimedAt: &now,
+	}, nil
+}
+
+func (s agentStub) PostJobResult(context.Context, agentapi.PostJobResultRequestObject) (agentapi.PostJobResultResponseObject, error) {
+	if s.mode == "conflict" {
+		return agentapi.PostJobResult409JSONResponse{
+			Code: "conflict", Message: "job not completable", RequestId: "req-result-409",
+		}, nil
+	}
+	return agentapi.PostJobResult204Response{}, nil
+}
+
 func (s agentStub) GetPolicy(_ context.Context, _ agentapi.GetPolicyRequestObject) (agentapi.GetPolicyResponseObject, error) {
 	switch s.mode {
 	case "unauthorized":
@@ -222,6 +256,73 @@ func (s controlStub) GetMachinePolicy(_ context.Context, _ controlapi.GetMachine
 		Document:  map[string]any{"firewall": true},
 		UpdatedAt: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC),
 	}, nil
+}
+
+func (s controlStub) CreateMachineJob(_ context.Context, req controlapi.CreateMachineJobRequestObject) (controlapi.CreateMachineJobResponseObject, error) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	payload := "echo hi"
+	expires := now.Add(time.Hour)
+	if req.Body != nil {
+		payload = req.Body.Payload
+		expires = req.Body.ExpiresAt
+	}
+	return controlapi.CreateMachineJob201JSONResponse{
+		Id:        mustUUID("66666666-6666-4666-8666-666666666666"),
+		MachineId: req.MachineId,
+		Status:    controlapi.Pending,
+		Payload:   payload,
+		ExitCode:  nil,
+		Stdout:    "",
+		Stderr:    "",
+		CreatedAt: now,
+		ExpiresAt: expires,
+	}, nil
+}
+
+func (s controlStub) ListMachineJobs(_ context.Context, req controlapi.ListMachineJobsRequestObject) (controlapi.ListMachineJobsResponseObject, error) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	return controlapi.ListMachineJobs200JSONResponse{
+		{
+			Id:        mustUUID("66666666-6666-4666-8666-666666666666"),
+			MachineId: req.MachineId,
+			Status:    controlapi.Pending,
+			Payload:   "echo hi",
+			ExitCode:  nil,
+			Stdout:    "",
+			Stderr:    "",
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		},
+	}, nil
+}
+
+func (s controlStub) GetJob(_ context.Context, req controlapi.GetJobRequestObject) (controlapi.GetJobResponseObject, error) {
+	if s.mode == "not_found" {
+		return controlapi.GetJob404JSONResponse{
+			Code: "not_found", Message: "job not found", RequestId: "req-job-404",
+		}, nil
+	}
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	return controlapi.GetJob200JSONResponse{
+		Id:        req.Id,
+		MachineId: mustUUID("33333333-3333-4333-8333-333333333333"),
+		Status:    controlapi.Pending,
+		Payload:   "echo hi",
+		ExitCode:  nil,
+		Stdout:    "",
+		Stderr:    "",
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}, nil
+}
+
+func (s controlStub) CancelJob(context.Context, controlapi.CancelJobRequestObject) (controlapi.CancelJobResponseObject, error) {
+	if s.mode == "conflict" {
+		return controlapi.CancelJob409JSONResponse{
+			Code: "conflict", Message: "job is not cancelable", RequestId: "req-cancel-409",
+		}, nil
+	}
+	return controlapi.CancelJob204Response{}, nil
 }
 
 func (s controlStub) PutMachinePolicy(_ context.Context, req controlapi.PutMachinePolicyRequestObject) (controlapi.PutMachinePolicyResponseObject, error) {

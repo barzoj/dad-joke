@@ -17,6 +17,10 @@ const (
 	ActionTokenRevoke  = "token.revoke"
 	ActionPolicyCreate = "policy.create"
 	ActionScriptLaunch = "script.launch"
+	ActionJobCreate    = "job.create"
+	ActionJobClaim     = "job.claim"
+	ActionJobComplete  = "job.complete"
+	ActionJobCancel    = "job.cancel"
 )
 
 // Logger writes append-only audit entries.
@@ -71,9 +75,42 @@ func (l Logger) PolicyCreate(ctx context.Context, tenantID, actorID, machineID s
 	})
 }
 
-// ScriptLaunch is the hook for future remote-script/job launch audit events.
+// ScriptLaunch is the legacy hook for remote-script launch audit events.
 func (l Logger) ScriptLaunch(ctx context.Context, tenantID, actorID, jobID, machineID string) error {
 	return l.Append(ctx, tenantID, ActionScriptLaunch, actorID, "job:"+jobID, map[string]string{
+		"machine_id": machineID,
+		"job_id":     jobID,
+	})
+}
+
+// JobCreate records enqueue of a one-shot job.
+func (l Logger) JobCreate(ctx context.Context, tenantID, actorID, jobID, machineID string) error {
+	return l.Append(ctx, tenantID, ActionJobCreate, actorID, "job:"+jobID, map[string]string{
+		"machine_id": machineID,
+		"job_id":     jobID,
+	})
+}
+
+// JobClaim records an agent claim (pending → running).
+func (l Logger) JobClaim(ctx context.Context, tenantID, actorID, jobID, machineID string) error {
+	return l.Append(ctx, tenantID, ActionJobClaim, actorID, "job:"+jobID, map[string]string{
+		"machine_id": machineID,
+		"job_id":     jobID,
+	})
+}
+
+// JobComplete records a terminal job result (succeeded/failed).
+func (l Logger) JobComplete(ctx context.Context, tenantID, actorID, jobID, machineID, status string) error {
+	return l.Append(ctx, tenantID, ActionJobComplete, actorID, "job:"+jobID, map[string]string{
+		"machine_id": machineID,
+		"job_id":     jobID,
+		"status":     status,
+	})
+}
+
+// JobCancel records cancel of a pending job.
+func (l Logger) JobCancel(ctx context.Context, tenantID, actorID, jobID, machineID string) error {
+	return l.Append(ctx, tenantID, ActionJobCancel, actorID, "job:"+jobID, map[string]string{
 		"machine_id": machineID,
 		"job_id":     jobID,
 	})
