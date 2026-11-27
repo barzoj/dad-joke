@@ -227,26 +227,29 @@ func policyFromDoc(d policyDoc) *store.Policy {
 }
 
 type jobDoc struct {
-	ID         string     `bson:"_id"`
-	TenantID   string     `bson:"tenant_id"`
-	MachineID  string     `bson:"machine_id"`
-	Status     string     `bson:"status"`
-	Payload    string     `bson:"payload"`
-	ExitCode   *int32     `bson:"exit_code,omitempty"`
-	Stdout     string     `bson:"stdout,omitempty"`
-	Stderr     string     `bson:"stderr,omitempty"`
-	DurationMS *int64     `bson:"duration_ms,omitempty"`
-	CreatedAt  time.Time  `bson:"created_at"`
-	ExpiresAt  time.Time  `bson:"expires_at"`
-	ClaimedAt  *time.Time `bson:"claimed_at,omitempty"`
-	FinishedAt *time.Time `bson:"finished_at,omitempty"`
+	ID             string     `bson:"_id"`
+	TenantID       string     `bson:"tenant_id"`
+	MachineID      string     `bson:"machine_id"`
+	Status         string     `bson:"status"`
+	Type           string     `bson:"type"`
+	Payload        string     `bson:"payload"`
+	TimeoutSeconds *int32     `bson:"timeout_seconds,omitempty"`
+	ExitCode       *int32     `bson:"exit_code,omitempty"`
+	Stdout         string     `bson:"stdout,omitempty"`
+	Stderr         string     `bson:"stderr,omitempty"`
+	DurationMS     *int64     `bson:"duration_ms,omitempty"`
+	CreatedAt      time.Time  `bson:"created_at"`
+	ExpiresAt      time.Time  `bson:"expires_at"`
+	ClaimedAt      *time.Time `bson:"claimed_at,omitempty"`
+	FinishedAt     *time.Time `bson:"finished_at,omitempty"`
 }
 
 func jobToDoc(j *store.Job) jobDoc {
 	d := jobDoc{
 		ID: j.ID, TenantID: j.TenantID, MachineID: j.MachineID,
-		Status: string(j.Status), Payload: j.Payload,
-		ExitCode: j.ExitCode, Stdout: j.Stdout, Stderr: j.Stderr,
+		Status: string(j.Status), Type: j.Type, Payload: j.Payload,
+		TimeoutSeconds: j.TimeoutSeconds,
+		ExitCode:       j.ExitCode, Stdout: j.Stdout, Stderr: j.Stderr,
 		DurationMS: j.DurationMS,
 		CreatedAt:  j.CreatedAt.UTC(),
 		ExpiresAt:  j.ExpiresAt.UTC(),
@@ -265,8 +268,9 @@ func jobToDoc(j *store.Job) jobDoc {
 func jobFromDoc(d jobDoc) *store.Job {
 	j := &store.Job{
 		ID: d.ID, TenantID: d.TenantID, MachineID: d.MachineID,
-		Status: store.JobStatus(d.Status), Payload: d.Payload,
-		ExitCode: d.ExitCode, Stdout: d.Stdout, Stderr: d.Stderr,
+		Status: store.JobStatus(d.Status), Type: d.Type, Payload: d.Payload,
+		TimeoutSeconds: d.TimeoutSeconds,
+		ExitCode:       d.ExitCode, Stdout: d.Stdout, Stderr: d.Stderr,
 		DurationMS: d.DurationMS,
 		CreatedAt:  d.CreatedAt.UTC(),
 		ExpiresAt:  d.ExpiresAt.UTC(),

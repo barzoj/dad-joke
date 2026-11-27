@@ -30,15 +30,27 @@ func (c *ControlAPI) CreateMachineJob(ctx context.Context, req controlapi.Create
 	if oversizedJobIO(req.Body.Payload) {
 		return controlapi.CreateMachineJob413JSONResponse{Code: "payload_too_large", Message: "payload exceeds 64 KiB limit", RequestId: uuid.NewString()}, nil
 	}
+	jobType := string(req.Body.Type)
+	if jobType != store.JobTypePowerShell && jobType != store.JobTypeCmd {
+		return controlapi.CreateMachineJob400JSONResponse{Code: "bad_request", Message: "type must be powershell or cmd", RequestId: uuid.NewString()}, nil
+	}
+	if req.Body.TimeoutSeconds != nil {
+		ts := *req.Body.TimeoutSeconds
+		if ts < 1 || ts > store.JobTimeoutMaxSeconds {
+			return controlapi.CreateMachineJob400JSONResponse{Code: "bad_request", Message: "timeout_seconds must be 1..300", RequestId: uuid.NewString()}, nil
+		}
+	}
 
 	now := c.now()
 	job := &store.Job{
-		TenantID:  tenantID,
-		MachineID: machineID,
-		Status:    store.JobPending,
-		Payload:   req.Body.Payload,
-		CreatedAt: now,
-		ExpiresAt: req.Body.ExpiresAt.UTC(),
+		TenantID:       tenantID,
+		MachineID:      machineID,
+		Status:         store.JobPending,
+		Type:           jobType,
+		Payload:        req.Body.Payload,
+		TimeoutSeconds: req.Body.TimeoutSeconds,
+		CreatedAt:      now,
+		ExpiresAt:      req.Body.ExpiresAt.UTC(),
 	}
 	if err := c.Store.Jobs().Create(ctx, job); err != nil {
 		if errors.Is(err, store.ErrInvalid) {
@@ -187,8 +199,10 @@ func (a *AgentAPI) PostJobResult(ctx context.Context, req agentapi.PostJobResult
 		status = store.JobSucceeded
 	case agentapi.DadJokeCommonJobResultStatusFailed:
 		status = store.JobFailed
+	case agentapi.DadJokeCommonJobResultStatusTimedOut:
+		status = store.JobTimedOut
 	default:
-		return agentapi.PostJobResult400JSONResponse{Code: "bad_request", Message: "status must be succeeded or failed", RequestId: uuid.NewString()}, nil
+		return agentapi.PostJobResult400JSONResponse{Code: "bad_request", Message: "status must be succeeded, failed, or timed_out", RequestId: uuid.NewString()}, nil
 	}
 
 	result := store.JobResult{
@@ -250,18 +264,20 @@ func toControlJob(job *store.Job) (controlapi.Job, error) {
 		return controlapi.Job{}, err
 	}
 	return controlapi.Job{
-		Id:         id,
-		MachineId:  machineID,
-		Status:     controlapi.DadJokeCommonJobStatus(job.Status),
-		Payload:    job.Payload,
-		ExitCode:   job.ExitCode,
-		Stdout:     job.Stdout,
-		Stderr:     job.Stderr,
-		DurationMs: job.DurationMS,
-		CreatedAt:  job.CreatedAt,
-		ExpiresAt:  job.ExpiresAt,
-		ClaimedAt:  job.ClaimedAt,
-		FinishedAt: job.FinishedAt,
+		Id:             id,
+		MachineId:      machineID,
+		Status:         controlapi.DadJokeCommonJobStatus(job.Status),
+		Type:           controlapi.DadJokeCommonJobType(job.Type),
+		Payload:        job.Payload,
+		TimeoutSeconds: job.TimeoutSeconds,
+		ExitCode:       job.ExitCode,
+		Stdout:         job.Stdout,
+		Stderr:         job.Stderr,
+		DurationMs:     job.DurationMS,
+		CreatedAt:      job.CreatedAt,
+		ExpiresAt:      job.ExpiresAt,
+		ClaimedAt:      job.ClaimedAt,
+		FinishedAt:     job.FinishedAt,
 	}, nil
 }
 
@@ -275,17 +291,19 @@ func toAgentJob(job *store.Job) (agentapi.Job, error) {
 		return agentapi.Job{}, err
 	}
 	return agentapi.Job{
-		Id:         id,
-		MachineId:  machineID,
-		Status:     agentapi.DadJokeCommonJobStatus(job.Status),
-		Payload:    job.Payload,
-		ExitCode:   job.ExitCode,
-		Stdout:     job.Stdout,
-		Stderr:     job.Stderr,
-		DurationMs: job.DurationMS,
-		CreatedAt:  job.CreatedAt,
-		ExpiresAt:  job.ExpiresAt,
-		ClaimedAt:  job.ClaimedAt,
-		FinishedAt: job.FinishedAt,
+		Id:             id,
+		MachineId:      machineID,
+		Status:         agentapi.DadJokeCommonJobStatus(job.Status),
+		Type:           agentapi.DadJokeCommonJobType(job.Type),
+		Payload:        job.Payload,
+		TimeoutSeconds: job.TimeoutSeconds,
+		ExitCode:       job.ExitCode,
+		Stdout:         job.Stdout,
+		Stderr:         job.Stderr,
+		DurationMs:     job.DurationMS,
+		CreatedAt:      job.CreatedAt,
+		ExpiresAt:      job.ExpiresAt,
+		ClaimedAt:      job.ClaimedAt,
+		FinishedAt:     job.FinishedAt,
 	}, nil
 }

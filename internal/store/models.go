@@ -98,21 +98,35 @@ const (
 	JobTimedOut  JobStatus = "timed_out"
 )
 
+// Supported job interpreter types (mirrored in api/common/jobs.tsp).
+const (
+	JobTypePowerShell = "powershell"
+	JobTypeCmd        = "cmd"
+)
+
+// JobTimeoutDefaultSeconds / JobTimeoutMaxSeconds mirror the agent hard-timeout contract.
+const (
+	JobTimeoutDefaultSeconds = 60
+	JobTimeoutMaxSeconds     = 300
+)
+
 // Job is a one-shot remote command/script assignment.
 type Job struct {
-	ID         string
-	TenantID   string
-	MachineID  string
-	Status     JobStatus
-	Payload    string
-	ExitCode   *int32
-	Stdout     string
-	Stderr     string
-	DurationMS *int64
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	ClaimedAt  *time.Time
-	FinishedAt *time.Time
+	ID              string
+	TenantID        string
+	MachineID       string
+	Status          JobStatus
+	Type            string // powershell | cmd
+	Payload         string
+	TimeoutSeconds  *int32
+	ExitCode        *int32
+	Stdout          string
+	Stderr          string
+	DurationMS      *int64
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ClaimedAt       *time.Time
+	FinishedAt      *time.Time
 }
 
 // Event is a compact agent telemetry record.
