@@ -81,7 +81,7 @@ HTTP handlers and product logic talk only to these interfaces. An architecture t
 Collections / models of note:
 
 - `users`: `id`, `tenant_id`, `email` (lowercased/trimmed, unique), `password_hash` (argon2id; never in JSON/logs), `created_at`
-- `user_identities`: `id`, `user_id`, `provider`, `subject` (unique on `(provider, subject)`), `created_at` — schema ready for a later Google OAuth link; no OAuth handlers yet
+- `user_identities`: `id`, `user_id`, `provider`, `subject` (unique on `(provider, subject)`), `created_at`
 - `sessions`: hashed `dj_ses_...` credentials with expiry and revoke timestamp
 
 ### MongoDB implementation (`internal/store/mongo`)

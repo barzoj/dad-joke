@@ -16,7 +16,7 @@ import (
 func TestLocalAuth_RegisterCreatesTenantUserAndSession(t *testing.T) {
 	t.Parallel()
 	st := memory.New()
-	secure := false
+	secure := true
 	base := startTestServer(t, st, server.Config{CookieSecure: &secure})
 
 	email := "Parent+" + uuid.NewString()[:8] + "@Example.COM"
@@ -51,8 +51,11 @@ func TestLocalAuth_RegisterCreatesTenantUserAndSession(t *testing.T) {
 	if strings.Contains(string(body), "password_hash") || strings.Contains(string(body), "$argon2id$") {
 		t.Fatalf("password material leaked: %s", body)
 	}
-	if sc := hdr.Get("Set-Cookie"); !strings.Contains(sc, "dj_session=") || !strings.Contains(sc, "HttpOnly") {
-		t.Fatalf("Set-Cookie = %q", sc)
+	sc := hdr.Get("Set-Cookie")
+	for _, want := range []string{"dj_session=", "HttpOnly", "SameSite=Lax", "Secure"} {
+		if !strings.Contains(sc, want) {
+			t.Fatalf("Set-Cookie missing %q: %q", want, sc)
+		}
 	}
 
 	code, _, body = doJSON(t, http.MethodGet, base+"/v1/auth/me", sess.AccessToken, nil)
@@ -100,6 +103,40 @@ func TestLocalAuth_DuplicateEmail409NoOrphanTenant(t *testing.T) {
 	if _, err := st.Tenants().GetByName(t.Context(), tenantName+"-other"); err == nil {
 		t.Fatal("orphan tenant left behind")
 	}
+}
+
+func TestLocalAuth_DuplicateEmailCaseInsensitive409(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	base := startTestServer(t, st, server.Config{})
+	suffix := uuid.NewString()[:8]
+	code, _, body := doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email":    "Foo@" + suffix + ".Example.com",
+		"password": "password123",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("first: %d %s", code, body)
+	}
+	code, _, body = doJSON(t, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
+		"email":    "foo@" + suffix + ".example.com",
+		"password": "password123",
+	})
+	if code != http.StatusConflict {
+		t.Fatalf("case-insensitive dup: %d %s", code, body)
+	}
+	assertErrorResponse(t, body)
+}
+
+func TestLocalAuth_PATOnlyMe401(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	base := startTestServer(t, st, server.Config{})
+	_, pat := seedTenantPAT(t, st, "pat-me-"+uuid.NewString()[:8])
+	code, _, body := doJSON(t, http.MethodGet, base+"/v1/auth/me", pat, nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("status = %d %s", code, body)
+	}
+	assertErrorResponse(t, body)
 }
 
 func TestLocalAuth_AllowSignupFalse403(t *testing.T) {

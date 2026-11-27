@@ -335,7 +335,9 @@ interface Auth {
   } | StandardErrors;
 
   /**
-   * Return the authenticated user. Accepts dj_pat_... or a user session.
+   * Return the authenticated user for the current user session
+   * (cookie and/or Bearer dj_ses_...). Requires an authenticated user
+   * session (PAT alone is insufficient → 401).
    */
   @get
   @route("me")
