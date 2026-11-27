@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -264,5 +267,58 @@ func TestPingErrorAndLifecycle(t *testing.T) {
 	}
 	if err := st.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPolicyPut_ConcurrentSameExpectedVersion(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	ctx := context.Background()
+	machineID := "m-race"
+	pol := &store.Policy{TenantID: "t", MachineID: machineID, Document: json.RawMessage(`{"n":0}`)}
+	if err := st.Policies().Put(ctx, pol, 0); err != nil || pol.Version != 1 {
+		t.Fatalf("seed: %v %+v", err, pol)
+	}
+
+	const n = 8
+	var (
+		wg       sync.WaitGroup
+		okCount  atomic.Int32
+		conflict atomic.Int32
+		start    = make(chan struct{})
+	)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			p := &store.Policy{
+				TenantID:  "t",
+				MachineID: machineID,
+				Document:  json.RawMessage(fmt.Sprintf(`{"n":%d}`, i)),
+			}
+			err := st.Policies().Put(ctx, p, 1)
+			switch {
+			case err == nil:
+				okCount.Add(1)
+			case errors.Is(err, store.ErrConflict):
+				conflict.Add(1)
+			default:
+				t.Errorf("unexpected err: %v", err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if okCount.Load() != 1 {
+		t.Fatalf("ok=%d, want 1", okCount.Load())
+	}
+	if conflict.Load() != int32(n-1) {
+		t.Fatalf("conflict=%d, want %d", conflict.Load(), n-1)
+	}
+	got, err := st.Policies().Get(ctx, "t", machineID)
+	if err != nil || got.Version != 2 {
+		t.Fatalf("final: %v %+v", err, got)
 	}
 }

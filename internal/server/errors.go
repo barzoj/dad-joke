@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,10 +55,17 @@ func writeTooManyRequests(w http.ResponseWriter, reqID string, retryAfter time.D
 }
 
 // writeRequestBindError maps oapi-codegen request/path bind failures to ErrorResponse JSON.
+// Oversized bodies (http.MaxBytesReader) map to 413; other bind/decode failures to 400.
 func writeRequestBindError(w http.ResponseWriter, r *http.Request, err error) {
+	reqID := requestID(r)
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large", reqID)
+		return
+	}
 	msg := "invalid request"
 	if err != nil && err.Error() != "" {
 		msg = err.Error()
 	}
-	writeAPIError(w, http.StatusBadRequest, "bad_request", msg, requestID(r))
+	writeAPIError(w, http.StatusBadRequest, "bad_request", msg, reqID)
 }

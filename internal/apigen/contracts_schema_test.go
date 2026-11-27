@@ -72,6 +72,16 @@ func TestOpenAPI_SeparateSecuritySchemes(t *testing.T) {
 	if !strings.Contains(controlText, "Retry-After:") {
 		t.Fatal("control OpenAPI missing Retry-After on 429")
 	}
+
+	if !strings.Contains(agentText, "/v1/policy:") {
+		t.Fatal("agent OpenAPI missing /v1/policy")
+	}
+	if !strings.Contains(controlText, "/v1/machines/{machine_id}/policy:") {
+		t.Fatal("control OpenAPI missing /v1/machines/{machine_id}/policy")
+	}
+	if !strings.Contains(controlText, "MachinePolicy:") || !strings.Contains(controlText, "PutMachinePolicyRequest:") {
+		t.Fatal("control OpenAPI missing MachinePolicy / PutMachinePolicyRequest schemas")
+	}
 }
 
 func TestGoModels_RawTokenOnlyOnCreatedResponses(t *testing.T) {
