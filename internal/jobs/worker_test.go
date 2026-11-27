@@ -146,6 +146,27 @@ func testCfg(t *testing.T) config.Config {
 	return cfg
 }
 
+// startAgent runs fn in a goroutine and registers cleanup that cancels ctx and
+// waits for exit so t.TempDir() is not removed while the agent still writes.
+func startAgent(t *testing.T, fn func(context.Context) error) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = fn(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("agent did not stop after cancel")
+		}
+	})
+	return cancel
+}
+
 func mustParseUUID(t *testing.T, s string) openapi_types.UUID {
 	t.Helper()
 	var id openapi_types.UUID
@@ -172,9 +193,7 @@ func TestWorker_Claim409DoesNotExecute(t *testing.T) {
 			return api, nil
 		},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = w.Run(ctx) }()
+	cancel := startAgent(t, w.Run)
 
 	jobID := "11111111-1111-4111-8111-111111111111"
 	h.Enqueue([]string{jobID})
@@ -220,9 +239,7 @@ func TestWorker_RejectsUnknownTypeBeforeSpawn(t *testing.T) {
 		Handoff: h, Executor: exec, Audit: &AuditLog{DataDir: dir}, Config: &cfg, Log: NopLogger{},
 		NewClient: func(string) (API, error) { return api, nil },
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = w.Run(ctx) }()
+	cancel := startAgent(t, w.Run)
 	h.Enqueue([]string{jobID})
 	deadline := time.Now().Add(2 * time.Second)
 	for api.resultCalls.Load() == 0 && time.Now().Before(deadline) {
@@ -256,9 +273,7 @@ func TestWorker_SequentialAndHeartbeatIsolation(t *testing.T) {
 		Handoff: h, Executor: exec, Audit: &AuditLog{DataDir: dir}, Config: &cfg, Log: NopLogger{},
 		NewClient: func(string) (API, error) { return api, nil },
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = w.Run(ctx) }()
+	cancel := startAgent(t, w.Run)
 
 	id1 := "33333333-3333-4333-8333-333333333333"
 	id2 := "44444444-4444-4444-8444-444444444444"
@@ -275,13 +290,13 @@ func TestWorker_SequentialAndHeartbeatIsolation(t *testing.T) {
 		t.Fatalf("running = %d, want 1 (sequential)", exec.running.Load())
 	}
 	// Heartbeat handoff remains non-blocking while job runs.
-	done := make(chan struct{})
+	enqDone := make(chan struct{})
 	go func() {
 		h.Enqueue([]string{"55555555-5555-4555-8555-555555555555"})
-		close(done)
+		close(enqDone)
 	}()
 	select {
-	case <-done:
+	case <-enqDone:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Enqueue blocked while job running")
 	}
@@ -308,9 +323,7 @@ func TestWorker_HugeOutputTruncatedAndResultOK(t *testing.T) {
 		Handoff: h, Executor: exec, Audit: &AuditLog{DataDir: dir}, Config: &cfg, Log: NopLogger{},
 		NewClient: func(string) (API, error) { return api, nil },
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = w.Run(ctx) }()
+	cancel := startAgent(t, w.Run)
 	h.Enqueue([]string{"66666666-6666-4666-8666-666666666666"})
 	deadline := time.Now().Add(2 * time.Second)
 	for api.resultCalls.Load() == 0 && time.Now().Before(deadline) {
@@ -341,9 +354,7 @@ func TestWorker_TimedOutStatus(t *testing.T) {
 		Handoff: h, Executor: exec, Audit: &AuditLog{DataDir: dir}, Config: &cfg, Log: NopLogger{},
 		NewClient: func(string) (API, error) { return api, nil },
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = w.Run(ctx) }()
+	cancel := startAgent(t, w.Run)
 	h.Enqueue([]string{"77777777-7777-4777-8777-777777777777"})
 	deadline := time.Now().Add(2 * time.Second)
 	for api.resultCalls.Load() == 0 && time.Now().Before(deadline) {

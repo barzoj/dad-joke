@@ -42,9 +42,7 @@ func TestGroup_UpdaterKeepsRunningDuringLongJob(t *testing.T) {
 	upd := &stubUpdater{}
 	g := service.Group{upd, w}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = g.Run(ctx) }()
+	cancel := startAgent(t, g.Run)
 
 	h.Enqueue([]string{"88888888-8888-4888-8888-888888888888"})
 	select {
