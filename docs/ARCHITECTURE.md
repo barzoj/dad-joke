@@ -1,6 +1,6 @@
 # Architecture
 
-This document defines the enduring architectural invariants of **dad-joke**: a Windows Home parental-control and native policy-enforcement system. It is the canonical reference for design and review. Future work belongs in issues—not here.
+This document defines the enduring architectural invariants of **Dad Joke**: a Windows Home parental-control and native policy-enforcement system. It is the canonical reference for design and review. Future work belongs in issues—not here. Security invariants and the Zero-Trust threat model live in [`SECURITY_MODEL.md`](SECURITY_MODEL.md).
 
 ## Privilege & Runtime Model
 
@@ -51,4 +51,4 @@ Contracts are the source of truth for compatibility and review. Implementations 
 
 ## Independent Review & CI
 
-Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI.
+Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (including the Security workflow: CodeQL, govulncheck, gosec, golangci-lint).

@@ -1,0 +1,41 @@
+# Pragmatic lint set: catch real bugs without pedantic noise.
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Closer.Close
+        - (*os.File).Close
+        - (*os.file).Close
+        - net/http.Response.Body.Close
+        - (*compress/gzip.Reader).Close
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+    staticcheck:
+      checks:
+        - all
+        - "-ST1000" # package comment noise
+        - "-ST1003" # initialism naming (Windows APIs)
+  exclusions:
+    generated: lax
+    paths:
+      - dist
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

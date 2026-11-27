@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -283,7 +284,7 @@ func TestPollerFailsWithoutIdentity(t *testing.T) {
 	p := &Poller{
 		Version: "0.0.1", Config: &cfg, Client: &countingClient{}, Store: newMemStore(),
 		Spawner: spawnerFunc(func(context.Context, string, ...string) error { return nil }),
-		Clock: RealClock{}, Log: logs, DataDir: t.TempDir(), BinaryPath: "bin", HelperExe: "helper",
+		Clock:   RealClock{}, Log: logs, DataDir: t.TempDir(), BinaryPath: "bin", HelperExe: "helper",
 	}
 	err := p.Run(context.Background())
 	if err == nil {
@@ -307,7 +308,7 @@ func TestPollerStartupLogDoesNotLeakToken(t *testing.T) {
 	p := &Poller{
 		Version: "0.0.1", Config: &cfg, Client: client, Store: newMemStore(),
 		Spawner: spawnerFunc(func(context.Context, string, ...string) error { return nil }),
-		Clock: RealClock{}, Log: logs, DataDir: t.TempDir(), BinaryPath: "bin", HelperExe: "helper",
+		Clock:   RealClock{}, Log: logs, DataDir: t.TempDir(), BinaryPath: "bin", HelperExe: "helper",
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -321,7 +322,9 @@ func TestPollerStartupLogDoesNotLeakToken(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
-	<-done
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	for _, line := range logs.rendered {
 		if strings.Contains(line, secret) {
 			t.Fatalf("token leaked in log: %s", line)

@@ -88,7 +88,7 @@ func (c *HTTPReleaseClient) FetchLatest(ctx context.Context, apiURL, agentVersio
 	if err != nil {
 		return ReleaseMeta{}, fmt.Errorf("fetch latest release: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readBounded(resp.Body, MaxReleaseJSONBytes)
 	if err != nil {
@@ -133,7 +133,7 @@ func (c *HTTPReleaseClient) Download(ctx context.Context, downloadURL, agentVers
 	if err != nil {
 		return nil, fmt.Errorf("download asset: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readBounded(resp.Body, maxBytes)
 	if err != nil {
