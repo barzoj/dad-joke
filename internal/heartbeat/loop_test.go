@@ -13,6 +13,7 @@ import (
 
 	"github.com/barzoj/dad-joke/gen/go/agentapi"
 	"github.com/barzoj/dad-joke/internal/config"
+	"github.com/barzoj/dad-joke/internal/jobs"
 )
 
 type logBuf struct {
@@ -45,6 +46,7 @@ type fakeClient struct {
 	lastAuth string
 	lastBody *agentapi.PostHeartbeatJSONRequestBody
 	editors  []agentapi.RequestEditorFn
+	pending  []string
 }
 
 func (c *fakeClient) PostHeartbeatWithResponse(ctx context.Context, body agentapi.PostHeartbeatJSONRequestBody, reqEditors ...agentapi.RequestEditorFn) (*agentapi.PostHeartbeatResponse, error) {
@@ -76,7 +78,20 @@ func (c *fakeClient) PostHeartbeatWithResponse(ctx context.Context, body agentap
 	if err != nil {
 		return nil, err
 	}
-	return &agentapi.PostHeartbeatResponse{HTTPResponse: &http.Response{StatusCode: status}}, nil
+	out := &agentapi.PostHeartbeatResponse{HTTPResponse: &http.Response{StatusCode: status}}
+	if status == http.StatusOK {
+		out.JSON200 = &agentapi.HeartbeatResponse{
+			ServerTime:           time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC),
+			DesiredPolicyVersion: 0,
+			PendingJobIds:        nil,
+		}
+		c.mu.Lock()
+		if c.pending != nil {
+			out.JSON200.PendingJobIds = append([]string(nil), c.pending...)
+		}
+		c.mu.Unlock()
+	}
+	return out, nil
 }
 
 func testCfg(backend string, interval int) config.Config {
@@ -345,6 +360,51 @@ func TestLoopReusesClientWhenBackendURLUnchanged(t *testing.T) {
 	}
 	if builds.Load() != 1 {
 		t.Fatalf("NewClient calls = %d, want 1 (reuse when backend_url unchanged)", builds.Load())
+	}
+}
+
+func TestLoopHandsOffPendingJobsWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	cfg := testCfg("http://127.0.0.1:9", 60)
+	fc := &fakeClient{pending: []string{
+		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}}
+	h := jobs.NewHandoff()
+	// Slow consumer: Enqueue must still return immediately.
+	loop := &Loop{
+		Version: "0.0.1-dev",
+		Config:  &cfg,
+		Log:     NopLogger{},
+		Clock:   RealClock{},
+		Host:    fakeHost{},
+		Jobs:    h,
+		NewClient: func(string) (HeartbeatClient, error) {
+			return fc, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = loop.Run(ctx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for h.Len() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("handoff len = %d, want 2", h.Len())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Second beat with same ids must not block even if queue still full of them
+	// (dedupe keeps len at 2).
+	done := make(chan struct{})
+	go func() {
+		h.Enqueue([]string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Enqueue blocked")
 	}
 }
 

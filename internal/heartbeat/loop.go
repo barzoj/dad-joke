@@ -13,6 +13,7 @@ import (
 	"github.com/barzoj/dad-joke/internal/buildinfo"
 	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/installer"
+	"github.com/barzoj/dad-joke/internal/jobs"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -46,17 +47,27 @@ type Loop struct {
 
 	// AppliedPolicyVersion is reported in heartbeats (0 until policy apply exists).
 	AppliedPolicyVersion int32
+
+	// Jobs receives pending_job_ids asynchronously (non-blocking). Nil disables handoff.
+	Jobs jobs.PendingSink
 }
 
 // New returns a production Loop wired to default paths.
-func New() *Loop {
+// When a non-nil handoff is provided, pending_job_ids from successful
+// heartbeats are forwarded without blocking the heartbeat loop.
+func New(handoff ...jobs.PendingSink) *Loop {
 	paths := installer.DefaultPaths()
+	var sink jobs.PendingSink
+	if len(handoff) > 0 {
+		sink = handoff[0]
+	}
 	return &Loop{
 		Version:    buildinfo.Version,
 		ConfigPath: paths.ConfigPath,
 		Log:        WriterLogger{W: os.Stderr},
 		Clock:      RealClock{},
 		Host:       DefaultHost{},
+		Jobs:       sink,
 	}
 }
 
@@ -212,6 +223,10 @@ func (l *Loop) beatOnce(ctx context.Context, client HeartbeatClient, cfg config.
 	}
 	if resp.StatusCode() != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode())
+	}
+	if l.Jobs != nil && resp.JSON200 != nil && len(resp.JSON200.PendingJobIds) > 0 {
+		// Non-blocking handoff — never stall heartbeat on a slow job.
+		l.Jobs.Enqueue(append([]string(nil), resp.JSON200.PendingJobIds...))
 	}
 	l.Log.Log("heartbeat: ok (machine_id=%s version=%s)", cfg.MachineID, l.Version)
 	return nil

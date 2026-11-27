@@ -68,7 +68,7 @@ The following are **binding design contracts**. New packages must implement them
 - Prefixed tokens (`dj_agt_` / `dj_pat_` / `dj_ses_`), hashed at rest, never logged (**implemented** in HTTP middleware + DAL).
 - Append-only `audit_logs` for sensitive operations (**implemented** for token issue/revoke; hooks ready for policy/script).
 - Per-IP / per-token (and per-email login) rate limits on auth failures and mutations (**implemented**, process-local).
-- Short job TTLs, Windows Job Object kill-on-timeout, and output caps for remote script execution.
+- Short job TTLs, Windows Job Object kill-on-timeout, and output caps for remote script execution (**implemented** in the agent job worker: claim → validate `powershell`/`cmd` → Job Object run → result/`timed_out` → local JSONL audit under `ProgramData`).
 - Non-root hardened server container image (**implemented** for the server image).
 - Fail-closed authn/authz on every new HTTP surface (**implemented** for current `/v1/...` routes; `/healthz`, register, and login remain unauthenticated).
 

@@ -68,6 +68,7 @@ func decodeJobID(t *testing.T, raw []byte) string {
 
 func jobCreateBody(payload string, expiresAt time.Time) map[string]any {
 	return map[string]any{
+		"type":       "cmd",
 		"payload":    payload,
 		"expires_at": expiresAt.UTC().Format(time.RFC3339Nano),
 	}

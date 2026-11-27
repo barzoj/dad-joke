@@ -113,8 +113,9 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
   - `GET /v1/machines` / `GET /v1/machines/{machine_id}` (ControlAPI): tenant-scoped. `status` is computed at read time as `online` when `now - last_seen_at <= 3m`, else `offline` (not persisted). Missing/other-tenant machine → `404`; empty list → `[]`.
 - **One-shot job queue** (`JobStore`; ControlAPI enqueue + AgentAPI claim/result):
   - State machine: `pending` → `running` → `succeeded` | `failed` | `canceled` | `timed_out`. `expires_at` is mandatory on create (TTL for unclaimed jobs). Expired `pending` jobs are omitted from `pending_job_ids`, are not claimable, and transition to `timed_out` (memory and Mongo).
+  - Each job has a contract `type` of `powershell` or `cmd`, a `payload` (script/command), and optional `timeout_seconds` (1..300; agent default 60 when omitted).
   - ControlAPI: `POST/GET /v1/machines/{machine_id}/jobs`, `GET /v1/jobs/{id}`, `POST /v1/jobs/{id}/cancel` (cancel only from `pending`; running/terminal → `409`).
-  - AgentAPI: `POST /v1/jobs/{id}/claim` and `POST /v1/jobs/{id}/result` require `machine_id` in the body and may act only on that `(tenant_id, machine_id)`. Atomic claim is `pending → running`; second claim → `409`. Result on canceled/finished → `409`. Cross-tenant (and wrong-machine) access → `404` (never `403`).
+  - AgentAPI: `POST /v1/jobs/{id}/claim` and `POST /v1/jobs/{id}/result` require `machine_id` in the body and may act only on that `(tenant_id, machine_id)`. Atomic claim is `pending → running`; second claim → `409`. Result statuses: `succeeded` / `failed` / `timed_out`. Result on canceled/finished → `409`. Cross-tenant (and wrong-machine) access → `404` (never `403`).
   - Hard caps: `payload` and result `stdout`/`stderr` ≤ 64 KiB (`413` when exceeded); request bodies also bounded by the server `MaxBytesReader`.
   - `audit_logs` entries on create, claim, complete, and cancel (`job.create` / `job.claim` / `job.complete` / `job.cancel`).
 - **Agent event / telemetry ingest** (`EventStore`; AgentAPI ingest + ControlAPI list):
@@ -132,16 +133,19 @@ Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + st
 
 ## Windows agent runtime (current)
 
-`dad-joke.exe run` (Windows Service under `LocalSystem`) runs two independent background loops via `service.Group`:
+`dad-joke.exe run` (Windows Service under `LocalSystem`) runs three independent background loops via `service.Group`:
 
 | Loop | Package | Behavior |
 | --- | --- | --- |
 | **Auto-update** | `internal/updater` | Polls `release_api_url` on `poll_interval_seconds`; SHA-256–verified apply. Never sends `Authorization` / `token`. |
-| **Heartbeat** | `internal/heartbeat` | When `backend_url` is non-empty, posts `POST /v1/heartbeat` via the generated `gen/go/agentapi` client with `Authorization: Bearer <token>`, `machine_id`, compile-time `Version`, hostname, OS version, and `applied_policy_version` (`0` until policy apply exists). First beat promptly on start, then every `heartbeat_interval_seconds`. |
+| **Heartbeat** | `internal/heartbeat` | When `backend_url` is non-empty, posts `POST /v1/heartbeat` via the generated `gen/go/agentapi` client with `Authorization: Bearer <token>`, `machine_id`, compile-time `Version`, hostname, OS version, and `applied_policy_version` (`0` until policy apply exists). First beat promptly on start, then every `heartbeat_interval_seconds`. On success, `pending_job_ids` are handed off asynchronously (non-blocking) to the job worker. |
+| **Job worker** | `internal/jobs` | Sequential consumer of handed-off job ids. For each id: `POST /v1/jobs/{id}/claim` (skip cleanly on `409`/`404`); Zero-Trust validation (only contract types `powershell` / `cmd`; payload ≤ 64 KiB) before spawn; execute inside a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; hard timeout default **60s**, max **300s** (clamped); bounded stdout/stderr capture capped at **64 KiB** with UTF-8-safe truncation; `POST /v1/jobs/{id}/result` (`succeeded` / `failed` / `timed_out`) and best-effort `POST /v1/events` (`job.result`); append a local JSONL audit line under `C:\ProgramData\DadJoke\jobs-audit.jsonl` with strict `SYSTEM` + `Administrators` ACL (`internal/acl`). Never logs the raw agent token. |
 
-Independence: backend DNS/5xx/401/outage is logged (with the raw `token` redacted) and must not stop the service or the updater loop. Empty `backend_url` disables heartbeats with no error noise (local-only `v0.0.1` mode).
+Independence: backend DNS/5xx/401/outage is logged (with the raw `token` redacted) and must not stop the service, the updater loop, or the job worker. A slow or timed-out job must never stall heartbeats or update polling. Empty `backend_url` disables heartbeats (and therefore job discovery) with no error noise (local-only `v0.0.1` mode).
 
 Transport for `backend_url`: empty allowed; non-empty requires `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`); no URL userinfo; system CA verification; TLS `MinVersion` 1.2; redirects re-validated and strip `Authorization` on cross-host hops.
+
+Job contract fields used by the agent (from `api/common/jobs.tsp`): `type` (`powershell` \| `cmd`), `payload`, optional `timeout_seconds` (1..300), and result status including `timed_out`.
 
 ## Engineering Principles
 

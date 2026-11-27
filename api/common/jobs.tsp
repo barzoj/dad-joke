@@ -11,6 +11,18 @@ namespace DadJoke.Common;
 /** Maximum UTF-8 byte length for job payload and result stdout/stderr. */
 const JobIOMaxBytes = 65536;
 
+/** Default agent-side hard timeout when timeout_seconds is omitted (seconds). */
+const JobTimeoutDefaultSeconds = 60;
+
+/** Maximum agent-side hard timeout (seconds). */
+const JobTimeoutMaxSeconds = 300;
+
+/** Supported remote script interpreters the Windows agent may execute. */
+enum JobType {
+  powershell,
+  cmd,
+}
+
 /** Job state machine status. */
 enum JobStatus {
   pending,
@@ -37,9 +49,18 @@ model Job {
   /** Current status in the job state machine. */
   status: JobStatus;
 
+  /** Interpreter the agent must use (`powershell` or `cmd`). */
+  type: JobType;
+
   /** Command/script payload (hard-capped at 64 KiB). */
   @maxLength(JobIOMaxBytes)
   payload: string;
+
+  /**
+   * Optional hard timeout in seconds (1..300). Null/omitted → agent default 60s.
+   * Agent clamps values above 300 to 300.
+   */
+  timeout_seconds: int32 | null;
 
   /** Process exit code when finished (null while pending/running). */
   exit_code: int32 | null;
@@ -71,12 +92,23 @@ model Job {
 /** Control-plane request to enqueue a one-shot job for a machine. */
 @friendlyName("CreateJobRequest")
 model CreateJobRequest {
+  /** Interpreter the agent must use (`powershell` or `cmd`). */
+  type: JobType;
+
   /** Command/script payload (hard-capped at 64 KiB). */
   @maxLength(JobIOMaxBytes)
   payload: string;
 
   /** Absolute UTC expiry for unclaimed jobs (mandatory). */
   expires_at: utcDateTime;
+
+  /**
+   * Optional hard timeout in seconds (1..300).
+   * Omitted → agent default 60s; agent clamps above 300 to 300.
+   */
+  @minValue(1)
+  @maxValue(JobTimeoutMaxSeconds)
+  timeout_seconds?: int32;
 }
 
 /** Agent request to atomically claim a pending job. */
@@ -91,6 +123,7 @@ model ClaimJobRequest {
 enum JobResultStatus {
   succeeded,
   failed,
+  timed_out,
 }
 
 /** Agent request to submit the result of a claimed job. */

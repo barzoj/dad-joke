@@ -6,4 +6,5 @@
 // Issue #2: TC-01 / TC-02 (//go:build e2e && windows).
 // Issue #3: TC-03 / TC-04 / TC-05 update checker E2E (local GitHub Releases mock).
 // Issue #10: TC-10 heartbeat to local AgentAPI + non-HTTPS external URL rejection.
+// Issue #14: TC-14 job claim/execute/result, timeout kill, truncation, isolation, audit ACL.
 package e2e_test

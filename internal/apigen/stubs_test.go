@@ -40,16 +40,18 @@ func (s agentStub) ClaimJob(_ context.Context, req agentapi.ClaimJobRequestObjec
 		machineID = req.Body.MachineId
 	}
 	return agentapi.ClaimJob200JSONResponse{
-		Id:        req.Id,
-		MachineId: machineID,
-		Status:    agentapi.DadJokeCommonJobStatusRunning,
-		Payload:   "echo hi",
-		ExitCode:  nil,
-		Stdout:    "",
-		Stderr:    "",
-		CreatedAt: now,
-		ExpiresAt: now.Add(time.Hour),
-		ClaimedAt: &now,
+		Id:             req.Id,
+		MachineId:      machineID,
+		Status:         agentapi.DadJokeCommonJobStatusRunning,
+		Type:           agentapi.Cmd,
+		Payload:        "echo hi",
+		TimeoutSeconds: nil,
+		ExitCode:       nil,
+		Stdout:         "",
+		Stderr:         "",
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(time.Hour),
+		ClaimedAt:      &now,
 	}, nil
 }
 
@@ -280,16 +282,22 @@ func (s controlStub) CreateMachineJob(_ context.Context, req controlapi.CreateMa
 		payload = req.Body.Payload
 		expires = req.Body.ExpiresAt
 	}
+	jobType := controlapi.Cmd
+	if req.Body != nil {
+		jobType = req.Body.Type
+	}
 	return controlapi.CreateMachineJob201JSONResponse{
-		Id:        mustUUID("66666666-6666-4666-8666-666666666666"),
-		MachineId: req.MachineId,
-		Status:    controlapi.Pending,
-		Payload:   payload,
-		ExitCode:  nil,
-		Stdout:    "",
-		Stderr:    "",
-		CreatedAt: now,
-		ExpiresAt: expires,
+		Id:             mustUUID("66666666-6666-4666-8666-666666666666"),
+		MachineId:      req.MachineId,
+		Status:         controlapi.Pending,
+		Type:           jobType,
+		Payload:        payload,
+		TimeoutSeconds: nil,
+		ExitCode:       nil,
+		Stdout:         "",
+		Stderr:         "",
+		CreatedAt:      now,
+		ExpiresAt:      expires,
 	}, nil
 }
 
@@ -316,15 +324,17 @@ func (s controlStub) ListMachineJobs(_ context.Context, req controlapi.ListMachi
 	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	return controlapi.ListMachineJobs200JSONResponse{
 		{
-			Id:        mustUUID("66666666-6666-4666-8666-666666666666"),
-			MachineId: req.MachineId,
-			Status:    controlapi.Pending,
-			Payload:   "echo hi",
-			ExitCode:  nil,
-			Stdout:    "",
-			Stderr:    "",
-			CreatedAt: now,
-			ExpiresAt: now.Add(time.Hour),
+			Id:             mustUUID("66666666-6666-4666-8666-666666666666"),
+			MachineId:      req.MachineId,
+			Status:         controlapi.Pending,
+			Type:           controlapi.Cmd,
+			Payload:        "echo hi",
+			TimeoutSeconds: nil,
+			ExitCode:       nil,
+			Stdout:         "",
+			Stderr:         "",
+			CreatedAt:      now,
+			ExpiresAt:      now.Add(time.Hour),
 		},
 	}, nil
 }
@@ -337,15 +347,17 @@ func (s controlStub) GetJob(_ context.Context, req controlapi.GetJobRequestObjec
 	}
 	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	return controlapi.GetJob200JSONResponse{
-		Id:        req.Id,
-		MachineId: mustUUID("33333333-3333-4333-8333-333333333333"),
-		Status:    controlapi.Pending,
-		Payload:   "echo hi",
-		ExitCode:  nil,
-		Stdout:    "",
-		Stderr:    "",
-		CreatedAt: now,
-		ExpiresAt: now.Add(time.Hour),
+		Id:             req.Id,
+		MachineId:      mustUUID("33333333-3333-4333-8333-333333333333"),
+		Status:         controlapi.Pending,
+		Type:           controlapi.Cmd,
+		Payload:        "echo hi",
+		TimeoutSeconds: nil,
+		ExitCode:       nil,
+		Stdout:         "",
+		Stderr:         "",
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(time.Hour),
 	}, nil
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/heartbeat"
 	"github.com/barzoj/dad-joke/internal/installer"
+	"github.com/barzoj/dad-joke/internal/jobs"
 	"github.com/barzoj/dad-joke/internal/service"
 	"github.com/barzoj/dad-joke/internal/updater"
 )
@@ -81,10 +82,12 @@ func Run(args []string, deps Dependencies) int {
 		deps.Installer = installer.New()
 	}
 	if deps.Runner == nil {
+		handoff := jobs.NewHandoff()
 		deps.Runner = service.NewRunner(service.Options{
 			Agent: service.Group{
 				updater.NewPoller(),
-				heartbeat.New(),
+				heartbeat.New(handoff),
+				jobs.New(handoff),
 			},
 		})
 	}
