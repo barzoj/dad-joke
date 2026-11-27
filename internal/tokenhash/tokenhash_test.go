@@ -86,6 +86,23 @@ func TestKindOf(t *testing.T) {
 	}
 }
 
+func TestGenerateSession(t *testing.T) {
+	t.Parallel()
+	raw, hash, err := tokenhash.GenerateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tokenhash.IsSession(raw) {
+		t.Fatalf("raw = %q", raw)
+	}
+	if !tokenhash.EqualHash(hash, raw) {
+		t.Fatal("hash mismatch")
+	}
+	if tokenhash.KindOf(raw) != "" {
+		t.Fatal("session must not be a TokenKind")
+	}
+}
+
 func TestGenerateUnique(t *testing.T) {
 	t.Parallel()
 	a, _, ah, err := tokenhash.Generate(store.TokenKindPAT)

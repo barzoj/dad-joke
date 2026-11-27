@@ -10,8 +10,10 @@ using DadJoke.Common;
  * ControlAPI: HTTP surface of the control plane / product logic.
  * Source of truth is this TypeSpec; OpenAPI 3.0.0 and Go are generated.
  *
- * Authenticated routes require HTTP Bearer credentials with the `dj_pat_`
- * prefix (256-bit entropy). `GET /healthz` remains unauthenticated.
+ * Authenticated routes accept either HTTP Bearer `dj_pat_...` (256-bit entropy)
+ * or a user session (`dj_ses_...` via Bearer and/or `dj_session` cookie).
+ * `GET /healthz`, `POST /v1/auth/register`, and `POST /v1/auth/login` are
+ * unauthenticated. Agent tokens (`dj_agt_...`) are rejected on this surface.
  *
  * Agent tokens (`dj_agt_...`) are issued here for AgentAPI; their raw secret
  * appears only in the 201 Created response models.
@@ -22,7 +24,8 @@ using DadJoke.Common;
 namespace ControlAPI;
 
 /**
- * HTTP Bearer security scheme for control-plane / PAT credentials (`dj_pat_...`).
+ * HTTP Bearer security scheme for control-plane credentials: `dj_pat_...`
+ * API keys or `dj_ses_...` user session tokens.
  * Distinct from AgentAPI's AgentBearerAuth (`dj_agt_...`).
  */
 model ControlBearerAuth {
@@ -34,6 +37,65 @@ model ControlBearerAuth {
 model HealthResponse {
   /** Always "ok" when the process can serve HTTP. */
   status: "ok";
+}
+
+/** Email/password registration body. */
+model RegisterRequest {
+  /** Account email (normalized to lowercase). */
+  @format("email")
+  email: string;
+
+  /** Password (hashed with argon2id at rest; never logged). */
+  @minLength(8)
+  password: string;
+
+  /** Optional tenant display name; defaults to the normalized email. */
+  tenant_name?: string;
+}
+
+/** Email/password login body. */
+model LoginRequest {
+  /** Account email. */
+  @format("email")
+  email: string;
+
+  /** Password. */
+  @minLength(1)
+  password: string;
+}
+
+/** Authenticated user profile (never includes password_hash). */
+model UserMe {
+  /** Stable user id. */
+  @format("uuid")
+  id: string;
+
+  /** Normalized email. */
+  @format("email")
+  email: string;
+
+  /** Tenant the user belongs to. */
+  @format("uuid")
+  tenant_id: string;
+}
+
+/**
+ * Session issued by register/login.
+ * Raw `access_token` (`dj_ses_...`) is also set as an HttpOnly cookie.
+ */
+model AuthSession {
+  /** Opaque session secret (`dj_ses_` + 256-bit entropy). */
+  @secret
+  access_token: string;
+
+  /** Always "Bearer". */
+  token_type: "Bearer";
+
+  /** When the session expires. */
+  expires_at: utcDateTime;
+
+  /** Authenticated user (no password material). */
+  user: UserMe;
 }
 
 /** Request to issue a new agent token (`dj_agt_...`). */
@@ -223,6 +285,68 @@ interface Health {
     @header contentType: "application/json";
     @body body: HealthResponse;
   };
+}
+
+@route("/v1/auth")
+interface Auth {
+  /**
+   * Register a new email/password user and tenant; returns a working session.
+   * Unauthenticated. Disabled with ALLOW_SIGNUP=false → 403.
+   */
+  @post
+  @route("register")
+  @useAuth(NoAuth)
+  @operationId("register")
+  op register(@body body: RegisterRequest): {
+    @statusCode _: 201;
+    @header contentType: "application/json";
+    /** Session cookie: HttpOnly; SameSite=Lax; Secure (unless COOKIE_SECURE=false). */
+    @header("Set-Cookie") setCookie: string;
+    @body body: AuthSession;
+  } | StandardErrors;
+
+  /**
+   * Log in with email/password; returns a working session.
+   * Unauthenticated. Failed attempts are rate-limited (429 + Retry-After).
+   */
+  @post
+  @route("login")
+  @useAuth(NoAuth)
+  @operationId("login")
+  op login(@body body: LoginRequest): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    /** Session cookie: HttpOnly; SameSite=Lax; Secure (unless COOKIE_SECURE=false). */
+    @header("Set-Cookie") setCookie: string;
+    @body body: AuthSession;
+  } | StandardErrors;
+
+  /**
+   * Invalidate the current user session (cookie and/or Bearer dj_ses_...).
+   * Requires an authenticated user session (PAT alone is insufficient).
+   */
+  @post
+  @route("logout")
+  @operationId("logout")
+  op logout(): {
+    @statusCode _: 204;
+    /** Clears the session cookie. */
+    @header("Set-Cookie") setCookie: string;
+  } | StandardErrors;
+
+  /**
+   * Return the authenticated user for the current user session
+   * (cookie and/or Bearer dj_ses_...). Requires an authenticated user
+   * session (PAT alone is insufficient → 401).
+   */
+  @get
+  @route("me")
+  @operationId("getMe")
+  op me(): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: UserMe;
+  } | StandardErrors;
 }
 
 @route("/v1/agent-tokens")

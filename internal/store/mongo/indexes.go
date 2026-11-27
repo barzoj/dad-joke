@@ -46,6 +46,19 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 			}},
 		},
 		{
+			coll: collSessions,
+			models: []mongo.IndexModel{
+				{
+					Keys:    bson.D{{Key: "hash", Value: 1}},
+					Options: options.Index().SetUnique(true).SetName("uniq_session_hash"),
+				},
+				{
+					Keys:    bson.D{{Key: "user_id", Value: 1}},
+					Options: options.Index().SetName("idx_sessions_user"),
+				},
+			},
+		},
+		{
 			coll: collTokens,
 			models: []mongo.IndexModel{
 				{

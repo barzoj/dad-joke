@@ -16,13 +16,32 @@ import (
 )
 
 const (
-	prefixAgent = "dj_agt_"
-	prefixPAT   = "dj_pat_"
-	entropyBytes = 32 // 256-bit
+	prefixAgent   = "dj_agt_"
+	prefixPAT     = "dj_pat_"
+	prefixSession = "dj_ses_"
+	entropyBytes  = 32 // 256-bit
 	// prefixLen is the non-secret identifying prefix length stored in the DB
 	// (scheme prefix + 8 hex chars of entropy).
 	prefixLen = len(prefixPAT) + 8
 )
+
+// SessionKind is a pseudo-kind for user session secrets (not a TokenKind).
+const SessionKind = "session"
+
+// GenerateSession creates a raw dj_ses_... secret and its SHA-256 hex hash.
+func GenerateSession() (raw, hash string, err error) {
+	var buf [entropyBytes]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", "", fmt.Errorf("tokenhash: rand: %w", err)
+	}
+	raw = prefixSession + hex.EncodeToString(buf[:])
+	return raw, Hash(raw), nil
+}
+
+// IsSession reports whether raw looks like a user session secret.
+func IsSession(raw string) bool {
+	return strings.HasPrefix(raw, prefixSession)
+}
 
 // Generate creates a new raw credential for kind, its stored prefix, and the
 // SHA-256 hex hash of the raw secret. The raw value must be shown once and discarded.

@@ -79,8 +79,11 @@ func TestGoModels_RawTokenOnlyOnCreatedResponses(t *testing.T) {
 
 	assertHasJSONField(t, reflect.TypeOf(controlapi.CreatedAgentToken{}), "token")
 	assertHasJSONField(t, reflect.TypeOf(controlapi.CreatedApiKey{}), "token")
+	assertHasJSONField(t, reflect.TypeOf(controlapi.AuthSession{}), "access_token")
 	assertLacksJSONField(t, reflect.TypeOf(controlapi.AgentTokenSummary{}), "token")
 	assertLacksJSONField(t, reflect.TypeOf(controlapi.ApiKeySummary{}), "token")
+	assertLacksJSONField(t, reflect.TypeOf(controlapi.UserMe{}), "password_hash")
+	assertLacksJSONField(t, reflect.TypeOf(controlapi.AuthSession{}), "password_hash")
 
 	controlSpec, err := os.ReadFile(openAPIPath(t, "control"))
 	if err != nil {

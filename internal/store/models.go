@@ -17,8 +17,19 @@ type User struct {
 	ID           string
 	TenantID     string
 	Email        string
-	PasswordHash string
+	PasswordHash string `json:"-"` // never serialize; argon2id at rest
 	CreatedAt    time.Time
+}
+
+// Session is a revocable user login session. The raw secret is never persisted.
+type Session struct {
+	ID        string
+	UserID    string
+	TenantID  string
+	Hash      string // SHA-256 hex of the raw dj_ses_... secret
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt *time.Time
 }
 
 // UserIdentity links an external IdP subject to a user (e.g. future Google OAuth).

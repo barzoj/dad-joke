@@ -21,6 +21,7 @@ const (
 	collTenants        = "tenants"
 	collUsers          = "users"
 	collUserIdentities = "user_identities"
+	collSessions       = "sessions"
 	collTokens         = "tokens"
 	collMachines       = "machines"
 	collPolicies       = "policies"
@@ -81,6 +82,7 @@ func (s *Store) Close(ctx context.Context) error {
 
 func (s *Store) Tenants() store.TenantStore   { return tenantStore{s} }
 func (s *Store) Users() store.UserStore       { return userStore{s} }
+func (s *Store) Sessions() store.SessionStore { return sessionStore{s} }
 func (s *Store) Tokens() store.TokenStore     { return tokenStore{s} }
 func (s *Store) Machines() store.MachineStore { return machineStore{s} }
 func (s *Store) Policies() store.PolicyStore  { return policyStore{s} }

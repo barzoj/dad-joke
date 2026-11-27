@@ -27,9 +27,10 @@ const (
 	writeTimeout      = 30 * time.Second
 	idleTimeout       = 60 * time.Second
 
-	defaultAuthFailMax = 30
-	defaultMutationMax = 120
-	defaultLimitWindow = time.Minute
+	defaultAuthFailMax  = 30
+	defaultMutationMax  = 120
+	defaultLoginFailMax = 10
+	defaultLimitWindow  = time.Minute
 )
 
 // Config configures the HTTP server.
@@ -39,9 +40,16 @@ type Config struct {
 	Log   *log.Logger
 
 	// Optional rate-limit overrides (nil → defaults). Useful in tests.
-	AuthFailureLimiter *ratelimit.Limiter
-	MutationLimiter    *ratelimit.Limiter
-	Clock              func() time.Time
+	AuthFailureLimiter  *ratelimit.Limiter
+	MutationLimiter     *ratelimit.Limiter
+	LoginFailureLimiter *ratelimit.Limiter
+	Clock               func() time.Time
+
+	// AllowSignup controls POST /v1/auth/register (default true when unset via pointer).
+	// Use AllowSignupPtr for explicit false; when nil, signup is allowed.
+	AllowSignup *bool
+	// CookieSecure sets the Secure flag on session cookies (nil → true).
+	CookieSecure *bool
 }
 
 // Server is a hardened HTTP listener.
@@ -86,8 +94,32 @@ func New(cfg Config) (*Server, error) {
 			Clock:   clock,
 		})
 	}
+	loginFail := cfg.LoginFailureLimiter
+	if loginFail == nil {
+		loginFail = ratelimit.New(ratelimit.Config{
+			Window:  defaultLimitWindow,
+			MaxHits: defaultLoginFailMax,
+			Clock:   clock,
+		})
+	}
 
-	authn := NewAuthenticator(AuthConfig{
+	allowSignup := true
+	if cfg.AllowSignup != nil {
+		allowSignup = *cfg.AllowSignup
+	}
+	cookieSecure := true
+	if cfg.CookieSecure != nil {
+		cookieSecure = *cfg.CookieSecure
+	}
+
+	controlAuthn := NewAuthenticator(AuthConfig{
+		Store:          cfg.Store,
+		AuthFailures:   authFail,
+		Mutations:      mutations,
+		Clock:          clock,
+		AcceptSessions: true,
+	})
+	agentAuthn := NewAuthenticator(AuthConfig{
 		Store:        cfg.Store,
 		AuthFailures: authFail,
 		Mutations:    mutations,
@@ -95,9 +127,12 @@ func New(cfg Config) (*Server, error) {
 	})
 
 	control := &ControlAPI{
-		Store: cfg.Store,
-		Audit: audit.Logger{Store: cfg.Store.Audits(), Clock: clock},
-		Clock: clock,
+		Store:         cfg.Store,
+		Audit:         audit.Logger{Store: cfg.Store.Audits(), Clock: clock},
+		Clock:         clock,
+		AllowSignup:   allowSignup,
+		CookieSecure:  cookieSecure,
+		LoginFailures: loginFail,
 	}
 	agent := &AgentAPI{Store: cfg.Store, Clock: clock}
 
@@ -108,13 +143,16 @@ func New(cfg Config) (*Server, error) {
 	controlHandler := controlapi.HandlerWithOptions(
 		controlapi.NewStrictHandler(control, nil),
 		controlapi.StdHTTPServerOptions{
-			Middlewares: []controlapi.MiddlewareFunc{authn.Middleware(store.TokenKindPAT)},
+			Middlewares: []controlapi.MiddlewareFunc{
+				injectClientIP,
+				controlAuthn.Middleware(store.TokenKindPAT),
+			},
 		},
 	)
 	agentHandler := agentapi.HandlerWithOptions(
 		agentapi.NewStrictHandler(agent, nil),
 		agentapi.StdHTTPServerOptions{
-			Middlewares: []agentapi.MiddlewareFunc{authn.Middleware(store.TokenKindAgent)},
+			Middlewares: []agentapi.MiddlewareFunc{agentAuthn.Middleware(store.TokenKindAgent)},
 		},
 	)
 
