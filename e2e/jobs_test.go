@@ -252,7 +252,12 @@ func waitForJobResult(t *testing.T, mock *mockJobsAPI, jobID string, timeout tim
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for result of %s; got %#v", jobID, mock.Results())
+			mock.mu.Lock()
+			claims := mock.claimCalls[jobID]
+			pending := append([]string(nil), mock.pendingIDs...)
+			results := append([]jobResultHit(nil), mock.results...)
+			mock.mu.Unlock()
+			t.Fatalf("timed out waiting for result of %s; claims=%d pending=%v got %#v", jobID, claims, pending, results)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
