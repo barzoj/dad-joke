@@ -1,24 +1,15 @@
-# Self-host reverse proxy. Domains come from the environment only:
-#   API_DOMAIN  — ControlAPI / AgentAPI hostname
-#   MCP_DOMAIN  — MCP Streamable HTTP hostname (may equal API_DOMAIN)
+# Self-host reverse proxy template.
 #
-# When both names are identical Caddy merges the site blocks. When they differ,
-# each hostname terminates TLS and proxies to the same internal server.
+# Domain inputs (the only hostname knobs): API_DOMAIN and MCP_DOMAIN.
+# deploy/caddy-entrypoint.sh (and scripts/render-caddyfile.sh) replace the
+# site-address placeholder line before Caddy starts:
+#   - equal domains     →  {$API_DOMAIN}
+#   - distinct domains  →  {$API_DOMAIN}, {$MCP_DOMAIN}
+#
+# Do NOT list the same host twice — Caddy rejects ambiguous site definitions.
+# Caddy does not merge duplicate site addresses.
 
-{$API_DOMAIN} {
-	encode gzip
-
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy no-referrer
-		-Server
-	}
-
-	reverse_proxy server:8080
-}
-
-{$MCP_DOMAIN} {
+__SITE_ADDRESS__ {
 	encode gzip
 
 	header {

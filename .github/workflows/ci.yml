@@ -211,6 +211,35 @@ jobs:
           docker compose -f docker-compose.yml config >/dev/null
           API_DOMAIN=api.example.com MCP_DOMAIN=mcp.example.com \
             docker compose -f deploy/compose.prod.yml config >/dev/null
+          API_DOMAIN=app.example.com MCP_DOMAIN=app.example.com \
+            docker compose -f deploy/compose.prod.yml config >/dev/null
+
+      - name: Validate Caddyfile (distinct + identical domains)
+        run: |
+          set -euo pipefail
+          # Distinct domains → site line "{$API_DOMAIN}, {$MCP_DOMAIN}"
+          API_DOMAIN=api.example.com MCP_DOMAIN=mcp.example.com \
+            ./scripts/render-caddyfile.sh deploy/Caddyfile > /tmp/Caddyfile.distinct
+          grep -E '^\{\$API_DOMAIN\}, \{\$MCP_DOMAIN\} \{' /tmp/Caddyfile.distinct
+          # Identical domains → single "{$API_DOMAIN}" site line (never ambiguous)
+          API_DOMAIN=app.example.com MCP_DOMAIN=app.example.com \
+            ./scripts/render-caddyfile.sh deploy/Caddyfile > /tmp/Caddyfile.identical
+          grep -E '^\{\$API_DOMAIN\} \{' /tmp/Caddyfile.identical
+          if grep -E '^\{\$API_DOMAIN\}, \{\$MCP_DOMAIN\} \{' /tmp/Caddyfile.identical; then
+            echo "identical-domain render must be a single-host site line" >&2
+            exit 1
+          fi
+          # caddy adapt --validate with env substitution for both renders
+          docker run --rm \
+            -e API_DOMAIN=api.example.com -e MCP_DOMAIN=mcp.example.com \
+            -v /tmp/Caddyfile.distinct:/etc/caddy/Caddyfile:ro \
+            caddy:2.10-alpine \
+            caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate
+          docker run --rm \
+            -e API_DOMAIN=app.example.com -e MCP_DOMAIN=app.example.com \
+            -v /tmp/Caddyfile.identical:/etc/caddy/Caddyfile:ro \
+            caddy:2.10-alpine \
+            caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate
 
       - name: Start dev compose stack
         run: |

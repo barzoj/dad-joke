@@ -104,9 +104,11 @@ jobs:
             v*) ;;
             *) echo "expected tag starting with v, got ${tag}" >&2; exit 1 ;;
           esac
+          img="ghcr.io/${GITHUB_REPOSITORY_OWNER}/dad-joke-server"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/dad-joke-server" >> "${GITHUB_OUTPUT}"
+          echo "image=${img}" >> "${GITHUB_OUTPUT}"
+          echo "candidate=${img}:sha-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
@@ -121,18 +123,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build multi-arch image (load amd64 for smoke)
+      # Push the multi-arch image ONCE to an immutable candidate tag. Smoke tests
+      # and later promotion all use this exact digest (no rebuild).
+      - name: Build & push multi-arch candidate
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2ea9 # v6.18.0
         with:
           context: .
-          platforms: linux/amd64
-          load: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:smoke-amd64
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.meta.outputs.image }}:latest
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.candidate }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Record candidate digest
+        id: digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          if [[ -z "${digest}" || "${digest}" != sha256:* ]]; then
+            echo "missing multi-arch digest from build-push-action" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${{ steps.meta.outputs.image }}@${digest}" >> "${GITHUB_OUTPUT}"
+          echo "candidate digest: ${digest}"
 
       - name: Start Mongo for smoke
         run: |
@@ -151,17 +167,27 @@ jobs:
           done
           test "$(docker inspect -f '{{.State.Health.Status}}' dj-release-mongo)" = "healthy"
 
-      - name: Smoke amd64 (/healthz, non-root, read-only rootfs)
+      - name: Smoke linux/amd64 from candidate digest
         run: |
           set -euo pipefail
-          img="${{ steps.meta.outputs.image }}:smoke-amd64"
-          user="$(docker image inspect "${img}" --format '{{.Config.User}}')"
-          echo "Config.User=${user}"
+          img="${{ steps.meta.outputs.image }}"
+          index_ref="${{ steps.digest.outputs.ref }}"
+          # Resolve the platform blob digest from the verified multi-arch index.
+          plat_digest="$(docker buildx imagetools inspect "${index_ref}" \
+            --format '{{range .Manifest.Manifests}}{{if and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64")}}{{.Digest}}{{end}}{{end}}')"
+          test -n "${plat_digest}"
+          plat_ref="${img}@${plat_digest}"
+          docker pull "${plat_ref}"
+          arch="$(docker image inspect "${plat_ref}" --format '{{.Architecture}}')"
+          user="$(docker image inspect "${plat_ref}" --format '{{.Config.User}}')"
+          echo "Architecture=${arch} User=${user} digest=${plat_digest}"
+          test "${arch}" = "amd64"
           case "${user}" in
             nonroot|nonroot:nonroot|65532|65532:65532) ;;
             *) echo "expected nonroot/65532, got ${user}" >&2; exit 1 ;;
           esac
-          cid="$(docker run -d --name dj-release-server --network dj-release-smoke \
+          cid="$(docker run -d --name dj-release-server --platform linux/amd64 \
+            --network dj-release-smoke \
             --read-only --tmpfs /tmp --user 65532:65532 \
             --security-opt no-new-privileges:true --cap-drop ALL \
             -e DAD_JOKE_MONGODB_URI=mongodb://dj-release-mongo:27017 \
@@ -169,11 +195,11 @@ jobs:
             -e DAD_JOKE_HTTP_ADDR=:8080 \
             -e COOKIE_SECURE=false \
             -e ALLOW_SIGNUP=false \
-            "${img}")"
+            "${plat_ref}")"
           ok=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
-            if docker run --rm --network dj-release-smoke curlimages/curl:8.12.1 \
+            if [[ -n "${ip}" ]] && docker run --rm --network dj-release-smoke curlimages/curl:8.12.1 \
               -fsS "http://${ip}/healthz" | grep -q '"status":"ok"'; then
               ok=1
               break
@@ -182,14 +208,27 @@ jobs:
           done
           docker logs "${cid}" || true
           test "${ok}" = "1"
+          docker rm -f "${cid}" >/dev/null
 
-      - name: Build + smoke linux/arm64 via QEMU
+      - name: Smoke linux/arm64 from candidate digest (QEMU)
         run: |
           set -euo pipefail
-          img="${{ steps.meta.outputs.image }}:smoke-arm64"
-          docker buildx build --platform linux/arm64 -t "${img}" --load .
-          # Boot/run the arm64 image under QEMU and hit /healthz.
-          cid="$(docker run -d --platform linux/arm64 --name dj-release-server-arm \
+          img="${{ steps.meta.outputs.image }}"
+          index_ref="${{ steps.digest.outputs.ref }}"
+          plat_digest="$(docker buildx imagetools inspect "${index_ref}" \
+            --format '{{range .Manifest.Manifests}}{{if and (eq .Platform.OS "linux") (eq .Platform.Architecture "arm64")}}{{.Digest}}{{end}}{{end}}')"
+          test -n "${plat_digest}"
+          plat_ref="${img}@${plat_digest}"
+          docker pull "${plat_ref}"
+          arch="$(docker image inspect "${plat_ref}" --format '{{.Architecture}}')"
+          user="$(docker image inspect "${plat_ref}" --format '{{.Config.User}}')"
+          echo "Architecture=${arch} User=${user} digest=${plat_digest}"
+          test "${arch}" = "arm64"
+          case "${user}" in
+            nonroot|nonroot:nonroot|65532|65532:65532) ;;
+            *) echo "expected nonroot/65532, got ${user}" >&2; exit 1 ;;
+          esac
+          cid="$(docker run -d --name dj-release-server-arm --platform linux/arm64 \
             --network dj-release-smoke \
             --read-only --tmpfs /tmp --user 65532:65532 \
             --security-opt no-new-privileges:true --cap-drop ALL \
@@ -198,7 +237,7 @@ jobs:
             -e DAD_JOKE_HTTP_ADDR=:8080 \
             -e COOKIE_SECURE=false \
             -e ALLOW_SIGNUP=false \
-            "${img}")"
+            "${plat_ref}")"
           ok=0
           for i in $(seq 1 60); do
             ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
@@ -211,30 +250,32 @@ jobs:
           done
           docker logs "${cid}" || true
           test "${ok}" = "1"
+          docker rm -f "${cid}" >/dev/null
 
-      - name: Push multi-arch image (tag + latest)
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2ea9 # v6.18.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.meta.outputs.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Assert GHCR tags exist
+      - name: Promote verified digest to v* and latest
         run: |
           set -euo pipefail
           img="${{ steps.meta.outputs.image }}"
           tag="${{ steps.meta.outputs.tag }}"
+          digest="${{ steps.digest.outputs.digest }}"
+          ref="${img}@${digest}"
+          docker buildx imagetools create \
+            -t "${img}:${tag}" \
+            -t "${img}:latest" \
+            "${ref}"
+
+          # Assert both tags resolve to the exact verified multi-arch digest.
+          tag_digest="$(docker buildx imagetools inspect "${img}:${tag}" | awk '/^Digest:/{print $2; exit}')"
+          latest_digest="$(docker buildx imagetools inspect "${img}:latest" | awk '/^Digest:/{print $2; exit}')"
+          echo "candidate=${digest}"
+          echo "tag=${tag_digest}"
+          echo "latest=${latest_digest}"
+          test "${tag_digest}" = "${digest}"
+          test "${latest_digest}" = "${digest}"
+
           docker buildx imagetools inspect "${img}:${tag}" | tee /tmp/inspect-tag.txt
-          docker buildx imagetools inspect "${img}:latest" | tee /tmp/inspect-latest.txt
           grep -q 'linux/amd64' /tmp/inspect-tag.txt
           grep -q 'linux/arm64' /tmp/inspect-tag.txt
-          grep -q 'linux/amd64' /tmp/inspect-latest.txt
-          grep -q 'linux/arm64' /tmp/inspect-latest.txt
 
       - name: Cleanup smoke containers
         if: always()

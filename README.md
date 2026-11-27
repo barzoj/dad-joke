@@ -29,7 +29,8 @@ Public templates live under [`deploy/`](deploy/):
 | File | Role |
 | --- | --- |
 | [`deploy/compose.prod.yml`](deploy/compose.prod.yml) | MongoDB + `ghcr.io/barzoj/dad-joke-server` + Caddy (HTTPS). Does **not** publish `27017` or `8080`. |
-| [`deploy/Caddyfile`](deploy/Caddyfile) | Automatic TLS; reverse-proxies `${API_DOMAIN}` and `${MCP_DOMAIN}` to `server:8080`. |
+| [`deploy/Caddyfile`](deploy/Caddyfile) | Automatic TLS template; `caddy-entrypoint.sh` reverse-proxies `${API_DOMAIN}` / `${MCP_DOMAIN}` to `server:8080`. |
+| [`deploy/caddy-entrypoint.sh`](deploy/caddy-entrypoint.sh) | Dedupes domains into **one** Caddy site block (single host when equal; `a, b` when distinct). |
 | [`deploy/env.example`](deploy/env.example) | Copy to `deploy/.env` and set domains / `ALLOW_SIGNUP` / `IMAGE_TAG`. |
 
 ```bash
@@ -38,7 +39,7 @@ cp deploy/env.example deploy/.env
 docker compose -f deploy/compose.prod.yml --env-file deploy/.env up -d
 ```
 
-`API_DOMAIN` is the ControlAPI / AgentAPI hostname; `MCP_DOMAIN` is the Streamable HTTP MCP hostname (`/mcp`). When they are the same value, Caddy merges the site blocks onto one certificate.
+`API_DOMAIN` is the ControlAPI / AgentAPI hostname; `MCP_DOMAIN` is the Streamable HTTP MCP hostname (`/mcp`). When both are the same value, the entrypoint emits a single-host site address (`{$API_DOMAIN}`) — Caddy does **not** accept duplicate site addresses. When they differ, it emits `{$API_DOMAIN}, {$MCP_DOMAIN}` in one block.
 
 Create the first admin user when signup is disabled:
 

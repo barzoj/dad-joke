@@ -7,6 +7,9 @@
 # MongoDB (27017) and the app server (8080) are NOT published to the host —
 # only Caddy listens on 80/443. Local development remains docker-compose.yml
 # at the repository root (builds from Dockerfile, publishes 8080 for smoke).
+#
+# Caddy site addresses: caddy-entrypoint.sh dedupes API_DOMAIN / MCP_DOMAIN into
+# one site block (single host when equal; "a, b" when distinct).
 
 name: dad-joke
 
@@ -62,8 +65,10 @@ services:
     environment:
       API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
       MCP_DOMAIN: ${MCP_DOMAIN:?set MCP_DOMAIN in .env}
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile.tmpl:ro
+      - ./caddy-entrypoint.sh:/entrypoint.sh:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

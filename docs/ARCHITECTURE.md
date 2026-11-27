@@ -145,9 +145,9 @@ Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + st
 | Surface | Behavior |
 | --- | --- |
 | **Dev compose** (`docker-compose.yml`) | Builds locally; publishes `8080` / `27017`; `COOKIE_SECURE=false`; server runs non-root (`65532`), `read_only: true`, `no-new-privileges`, `cap_drop: ALL`; MongoDB `--wiredTigerCacheSizeGB` capped. |
-| **Prod compose** (`deploy/compose.prod.yml`) | Pulls `ghcr.io/barzoj/dad-joke-server:${IMAGE_TAG:-latest}`; **does not** publish `8080` or `27017`; `COOKIE_SECURE=true`; same hardening flags; Caddy terminates HTTPS on 80/443 using `deploy/Caddyfile` parameterized only with `${API_DOMAIN}` / `${MCP_DOMAIN}` (identical or distinct). |
+| **Prod compose** (`deploy/compose.prod.yml`) | Pulls `ghcr.io/barzoj/dad-joke-server:${IMAGE_TAG:-latest}`; **does not** publish `8080` or `27017`; `COOKIE_SECURE=true`; same hardening flags; Caddy terminates HTTPS on 80/443. `deploy/caddy-entrypoint.sh` renders `deploy/Caddyfile` from `${API_DOMAIN}` / `${MCP_DOMAIN}` only into **one** site block (single host when equal; comma-separated when distinct — Caddy rejects duplicate site addresses). |
 | **Ops scripts** | `scripts/backup-mongo.sh` (`mongodump --archive --gzip` + retention); `scripts/smoke-e2e.sh` (healthz → signup → PAT/agent token → heartbeat → MCP `tools/list` / `list_machines`); `scripts/no-leak-check.sh` (CI sterility gate). |
-| **CI / release** | Trivy `HIGH`/`CRITICAL` image scan; Compose smoke runs `smoke-e2e.sh` end-to-end; `v*` tags publish Windows `.exe`+`.sha256` and multi-arch (`linux/amd64`+`linux/arm64`) GHCR tags `v0.0.x` and `latest` after `/healthz` + non-root + read-only + arm64 boot checks. |
+| **CI / release** | Trivy `HIGH`/`CRITICAL` image scan; Compose smoke runs `smoke-e2e.sh` end-to-end; Caddyfile validated (`caddy adapt --validate`) for both equal and distinct domains; `v*` tags publish Windows `.exe`+`.sha256` and multi-arch GHCR images by pushing an immutable `sha-<commit>` candidate, smoke-testing that exact digest on `amd64`+`arm64`, then promoting the same digest to `v0.0.x` and `latest`. |
 
 ## Windows agent runtime (current)
 
