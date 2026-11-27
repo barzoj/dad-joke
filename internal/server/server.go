@@ -163,6 +163,7 @@ func New(cfg Config) (*Server, error) {
 	)
 
 	root.Handle("/v1/heartbeat", agentHandler)
+	root.Handle("/v1/policy", agentHandler)
 	root.Handle("/v1/", controlHandler)
 
 	handler := securityHeaders(limitBody(root, maxRequestBytes))

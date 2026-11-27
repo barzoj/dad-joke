@@ -28,6 +28,28 @@ func (s agentStub) GetHealthz(context.Context, agentapi.GetHealthzRequestObject)
 	return agentapi.GetHealthz200JSONResponse{Status: agentapi.Ok}, nil
 }
 
+func (s agentStub) GetPolicy(_ context.Context, _ agentapi.GetPolicyRequestObject) (agentapi.GetPolicyResponseObject, error) {
+	switch s.mode {
+	case "unauthorized":
+		return agentapi.GetPolicy401JSONResponse{
+			Code:      "unauthorized",
+			Message:   "missing or invalid agent token",
+			RequestId: "req-agent-policy-401",
+		}, nil
+	case "not_found":
+		return agentapi.GetPolicy404JSONResponse{
+			Code:      "not_found",
+			Message:   "policy not found",
+			RequestId: "req-agent-policy-404",
+		}, nil
+	}
+	return agentapi.GetPolicy200JSONResponse{
+		Version:   1,
+		Document:  map[string]any{"block": []any{"notepad.exe"}},
+		UpdatedAt: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC),
+	}, nil
+}
+
 func (s agentStub) PostHeartbeat(_ context.Context, req agentapi.PostHeartbeatRequestObject) (agentapi.PostHeartbeatResponseObject, error) {
 	switch s.mode {
 	case "unauthorized":
@@ -185,6 +207,51 @@ func (s controlStub) GetMachine(_ context.Context, req controlapi.GetMachineRequ
 	m := sampleMachine()
 	m.MachineId = req.MachineId
 	return controlapi.GetMachine200JSONResponse(m), nil
+}
+
+func (s controlStub) GetMachinePolicy(_ context.Context, _ controlapi.GetMachinePolicyRequestObject) (controlapi.GetMachinePolicyResponseObject, error) {
+	if s.mode == "not_found" {
+		return controlapi.GetMachinePolicy404JSONResponse{
+			Code:      "not_found",
+			Message:   "policy not found",
+			RequestId: "req-policy-404",
+		}, nil
+	}
+	return controlapi.GetMachinePolicy200JSONResponse{
+		Version:   2,
+		Document:  map[string]any{"firewall": true},
+		UpdatedAt: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC),
+	}, nil
+}
+
+func (s controlStub) PutMachinePolicy(_ context.Context, req controlapi.PutMachinePolicyRequestObject) (controlapi.PutMachinePolicyResponseObject, error) {
+	switch s.mode {
+	case "conflict":
+		return controlapi.PutMachinePolicy409JSONResponse{
+			Code:      "conflict",
+			Message:   "expected_version mismatch",
+			RequestId: "req-policy-409",
+		}, nil
+	case "unauthorized":
+		return controlapi.PutMachinePolicy401JSONResponse{
+			Code:      "unauthorized",
+			Message:   "missing or invalid control token",
+			RequestId: "req-policy-401",
+		}, nil
+	}
+	doc := map[string]any{}
+	if req.Body != nil && req.Body.Document != nil {
+		doc = req.Body.Document
+	}
+	ver := int32(1)
+	if req.Body != nil && req.Body.ExpectedVersion > 0 {
+		ver = req.Body.ExpectedVersion + 1
+	}
+	return controlapi.PutMachinePolicy200JSONResponse{
+		Version:   ver,
+		Document:  doc,
+		UpdatedAt: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC),
+	}, nil
 }
 
 func (s controlStub) Register(_ context.Context, req controlapi.RegisterRequestObject) (controlapi.RegisterResponseObject, error) {

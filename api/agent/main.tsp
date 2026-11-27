@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/policy.tsp";
 
 using TypeSpec.Http;
 using TypeSpec.OpenAPI;
@@ -97,5 +98,26 @@ interface Heartbeat {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: HeartbeatResponse;
+  } | StandardErrors;
+}
+
+@route("/v1/policy")
+interface Policy {
+  /**
+   * Fetch the desired low-level policy for a machine in the authenticated tenant.
+   * Requires AgentBearerAuth (`Authorization: Bearer dj_agt_...`).
+   * `machine_id` must identify a machine that has a stored policy for this
+   * tenant; missing or cross-tenant ids return 404 (never an empty policy).
+   * Control-plane credentials (`dj_pat_` / session) are rejected with 401.
+   */
+  @get
+  @operationId("getPolicy")
+  op getPolicy(
+    /** Persistent machine identity (RFC 4122 UUIDv4). */
+    @query @format("uuid") machine_id: string
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: MachinePolicy;
   } | StandardErrors;
 }

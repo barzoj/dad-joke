@@ -61,8 +61,8 @@ Shared error shapes live in `api/common/errors.tsp` and are imported by both ser
 
 | Surface | Security | Notable routes |
 | --- | --- | --- |
-| **AgentAPI** | `AgentBearerAuth` (HTTP Bearer `dj_agt_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST /v1/heartbeat` — machine identity + applied policy; response includes `server_time`, `desired_policy_version`, `pending_job_ids` |
-| **ControlAPI** | `ControlBearerAuth` (HTTP Bearer `dj_pat_...` **or** user session `dj_ses_...` / `dj_session` cookie); `GET /healthz`, `POST /v1/auth/register`, `POST /v1/auth/login` use `@useAuth(NoAuth)` | `POST /v1/auth/register\|login\|logout`, `GET /v1/auth/me`, `POST/GET/DELETE /v1/agent-tokens`, `POST/GET/DELETE /v1/api-keys`, `GET /v1/machines`, `GET /v1/machines/{machine_id}` |
+| **AgentAPI** | `AgentBearerAuth` (HTTP Bearer `dj_agt_...`); `GET /healthz` uses `@useAuth(NoAuth)` | `POST /v1/heartbeat` — machine identity + applied policy; response includes `server_time`, `desired_policy_version`, `pending_job_ids`. `GET /v1/policy?machine_id=` — versioned low-level desired policy for that `(tenant_id, machine_id)` (missing → `404`) |
+| **ControlAPI** | `ControlBearerAuth` (HTTP Bearer `dj_pat_...` **or** user session `dj_ses_...` / `dj_session` cookie); `GET /healthz`, `POST /v1/auth/register`, `POST /v1/auth/login` use `@useAuth(NoAuth)` | `POST /v1/auth/register\|login\|logout`, `GET /v1/auth/me`, `POST/GET/DELETE /v1/agent-tokens`, `POST/GET/DELETE /v1/api-keys`, `GET /v1/machines`, `GET /v1/machines/{machine_id}`, `GET/PUT /v1/machines/{machine_id}/policy` |
 
 Unified failures use `ErrorResponse` (`code`, `message`, `request_id`) for `400` / `401` / `403` / `404` / `409` / `413` / `429` / `500` / `503`. `429` responses declare a `Retry-After` header.
 
@@ -83,6 +83,7 @@ Collections / models of note:
 - `users`: `id`, `tenant_id`, `email` (lowercased/trimmed, unique), `password_hash` (argon2id; never in JSON/logs), `created_at`
 - `user_identities`: `id`, `user_id`, `provider`, `subject` (unique on `(provider, subject)`), `created_at`
 - `sessions`: hashed `dj_ses_...` credentials with expiry and revoke timestamp
+- `policies`: one document per `(tenant_id, machine_id)` with monotonic `version`, opaque JSON `document`, and `updated_at`. `PolicyStore.Put` uses `expected_version` (0 creates version 1; otherwise the stored version must match or `ErrConflict`) so concurrent writers cannot lose updates.
 
 ### MongoDB implementation (`internal/store/mongo`)
 
@@ -102,6 +103,9 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
   - ControlAPI routes: `Authorization: Bearer dj_pat_...` **or** `dj_ses_...` Bearer / `dj_session` cookie; same verification; agent tokens → `401`.
   - Successful auth puts `tenant_id` and actor id on `context.Context` (`internal/authctx`); user sessions also set `user_id` / `session_id`. Handlers are strictly tenant-scoped (cross-tenant → `404`).
 - **Token CRUD** (ControlAPI): create/list/delete agent tokens and API keys (session or PAT). Raw secret returned only on `201 Created`; at rest only SHA-256 hash + non-secret prefix. Issue and revoke append to `audit_logs` (`internal/audit`; hooks also exist for policy create / script launch).
+- **Low-level policy CRUD:**
+  - `PUT /v1/machines/{machine_id}/policy` (ControlAPI): body `{expected_version, document}` writes an opaque JSON desired-state document. First write (`expected_version=0`) creates `version=1`; updates require the current version and return `409` on mismatch. Each successful write appends `audit_logs` (`policy.create`) and is immediately visible to heartbeats. Invalid JSON → `400`; body over the global `http.MaxBytesReader` limit (1 MiB) → `413`.
+  - `GET /v1/machines/{machine_id}/policy` (ControlAPI) / `GET /v1/policy?machine_id=` (AgentAPI): tenant-scoped; missing policy → `404` (never an empty document). AgentAPI rejects `dj_pat_` / session credentials with `401`.
 - **Heartbeat & machines:**
   - `POST /v1/heartbeat` (AgentAPI): tenant from auth context only. `machine_id` must be RFC 4122 UUIDv4 (version + variant bits); otherwise `400` `ErrorResponse`. Atomically upserts one `machines` document per `(tenant_id, machine_id)` (unique index; Mongo `_id` = `tenant_id|machine_id`), setting `last_seen_at` from the injectable server clock (UTC) plus `agent_version`, `hostname`, `os_version`, `applied_policy_version`. Response: `server_time`, `desired_policy_version` (from `PolicyStore`, else `0`), `pending_job_ids` (from `JobStore`, else `[]`—never JSON `null`).
   - `GET /v1/machines` / `GET /v1/machines/{machine_id}` (ControlAPI): tenant-scoped. `status` is computed at read time as `online` when `now - last_seen_at <= 3m`, else `offline` (not persisted). Missing/other-tenant machine → `404`; empty list → `[]`.

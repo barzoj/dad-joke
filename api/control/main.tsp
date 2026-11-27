@@ -1,6 +1,7 @@
 import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
+import "../common/policy.tsp";
 
 using TypeSpec.Http;
 using TypeSpec.OpenAPI;
@@ -453,5 +454,41 @@ interface Machines {
     @statusCode _: 200;
     @header contentType: "application/json";
     @body body: Machine;
+  } | StandardErrors;
+
+  /**
+   * Get the versioned low-level desired policy for a machine.
+   * Missing policy (unknown machine_id or never written) → 404.
+   */
+  @get
+  @route("{machine_id}/policy")
+  @operationId("getMachinePolicy")
+  op getPolicy(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: MachinePolicy;
+  } | StandardErrors;
+
+  /**
+   * Create or replace the versioned low-level desired policy for a machine.
+   * `expected_version` 0 creates version 1; otherwise the stored version must
+   * match or the server returns 409 Conflict (lost-update protection).
+   * Successful writes append an audit_logs entry and are visible immediately
+   * via AgentAPI `POST /v1/heartbeat` (`desired_policy_version`).
+   */
+  @put
+  @route("{machine_id}/policy")
+  @operationId("putMachinePolicy")
+  op putPolicy(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string,
+    @body body: PutMachinePolicyRequest
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: MachinePolicy;
   } | StandardErrors;
 }
