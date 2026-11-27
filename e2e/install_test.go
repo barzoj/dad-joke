@@ -67,15 +67,35 @@ func mustPowershell(t *testing.T, script string) string {
 func cleanupInstall(t *testing.T, bin string) {
 	t.Helper()
 	_, _ = runAdmin(t, bin, "uninstall")
+	// Force-stop and wait for SERVICE_STOPPED before sc delete so a later
+	// install does not race StartService against a still-stopping instance.
 	_, _ = powershell(t, fmt.Sprintf(`
 $ErrorActionPreference = 'SilentlyContinue'
-Stop-Service -Name '%s' -Force
+$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+if ($svc) {
+  if ($svc.Status -ne 'Stopped') {
+    Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue
+  }
+  $deadline = (Get-Date).AddSeconds(60)
+  do {
+    $svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+    if (-not $svc -or $svc.Status -eq 'Stopped') { break }
+    Start-Sleep -Milliseconds 200
+  } while ((Get-Date) -lt $deadline)
+}
 sc.exe delete '%s' | Out-Null
+# Wait until SCM forgets the name (marked-for-delete drain).
+$deadline = (Get-Date).AddSeconds(30)
+do {
+  $svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+  if (-not $svc) { break }
+  Start-Sleep -Milliseconds 200
+} while ((Get-Date) -lt $deadline)
 netsh advfirewall firewall delete rule name='%s' | Out-Null
 Remove-Item -LiteralPath '%s' -Recurse -Force
 Remove-Item -LiteralPath '%s' -Recurse -Force
 Remove-Item -LiteralPath '%s.old' -Force
-`, serviceName, serviceName, firewallRuleName, installDir, dataDir, installExe))
+`, serviceName, serviceName, serviceName, serviceName, serviceName, firewallRuleName, installDir, dataDir, installExe))
 }
 
 func waitPathAbsent(t *testing.T, path string, timeout time.Duration) {

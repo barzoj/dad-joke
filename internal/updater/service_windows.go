@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/barzoj/dad-joke/internal/winscm"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+const scmTransitionTimeout = 60 * time.Second
 
 // OSService implements ServiceControl via the Windows SCM.
 type OSService struct{}
@@ -34,10 +37,13 @@ func (OSService) Stop(name string) error {
 	if err != nil {
 		return err
 	}
-	if status.State == svc.Stopped {
+	if winscm.StopNoop(uint32(status.State)) {
 		return nil
 	}
 	_, err = s.Control(svc.Stop)
+	if err != nil && winscm.IsBenignStopError(err) {
+		return nil
+	}
 	return err
 }
 
@@ -57,10 +63,21 @@ func (OSService) Start(name string) error {
 	if err != nil {
 		return err
 	}
-	if status.State == svc.Running {
+	switch winscm.PlanStart(uint32(status.State)) {
+	case winscm.StartNop:
 		return nil
+	case winscm.StartAfterStop:
+		if err := waitHandleState(s, svc.Stopped, scmTransitionTimeout); err != nil {
+			return err
+		}
 	}
-	return s.Start()
+	if err := s.Start(); err != nil {
+		if winscm.IsAlreadyRunning(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // Wait implements ServiceControl.
@@ -79,7 +96,10 @@ func (OSService) Wait(name string, state ServiceState, timeout time.Duration) er
 		return err
 	}
 	defer s.Close()
+	return waitHandleState(s, want, timeout)
+}
 
+func waitHandleState(s *mgr.Service, want svc.State, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, err := s.Query()
@@ -90,7 +110,7 @@ func (OSService) Wait(name string, state ServiceState, timeout time.Duration) er
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for %s to become %s (last=%d)", name, state, status.State)
+			return fmt.Errorf("timeout waiting for service state %d (last=%d)", want, status.State)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
