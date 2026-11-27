@@ -75,7 +75,7 @@ const JobIOMaxBytes = 64 * 1024
 // JobResult is the terminal outcome of a claimed job.
 type JobResult struct {
 	Status     JobStatus
-	ExitCode   *int
+	ExitCode   *int32
 	Stdout     string
 	Stderr     string
 	DurationMS *int64

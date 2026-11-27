@@ -113,7 +113,7 @@ func (j jobStore) Claim(ctx context.Context, tenantID, machineID, id string, at 
 		return nil, store.ErrNotFound
 	}
 	if job.Status == store.JobPending && !job.ExpiresAt.After(at) {
-		_, _ = j.s.coll(collJobs).UpdateOne(ctx,
+		if _, err := j.s.coll(collJobs).UpdateOne(ctx,
 			bson.D{
 				{Key: "_id", Value: id},
 				{Key: "tenant_id", Value: tenantID},
@@ -123,7 +123,9 @@ func (j jobStore) Claim(ctx context.Context, tenantID, machineID, id string, at 
 				{Key: "status", Value: string(store.JobTimedOut)},
 				{Key: "finished_at", Value: at},
 			}}},
-		)
+		); err != nil {
+			return nil, err
+		}
 		return nil, store.ErrConflict
 	}
 	return nil, store.ErrConflict

@@ -78,7 +78,7 @@ func TestIntegration_JobStore_ExpiryClaimRace(t *testing.T) {
 		t.Fatalf("conflicts = %d, want 31", conflict.Load())
 	}
 
-	code := 0
+	code := int32(0)
 	if err := st.Jobs().Complete(ctx, ten.ID, machineID, race.ID, store.JobResult{
 		Status: store.JobSucceeded, ExitCode: &code, FinishedAt: now,
 	}); err != nil {

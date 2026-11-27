@@ -105,7 +105,7 @@ type Job struct {
 	MachineID  string
 	Status     JobStatus
 	Payload    string
-	ExitCode   *int
+	ExitCode   *int32
 	Stdout     string
 	Stderr     string
 	DurationMS *int64

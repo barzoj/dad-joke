@@ -191,15 +191,9 @@ func (a *AgentAPI) PostJobResult(ctx context.Context, req agentapi.PostJobResult
 		return agentapi.PostJobResult400JSONResponse{Code: "bad_request", Message: "status must be succeeded or failed", RequestId: uuid.NewString()}, nil
 	}
 
-	var exitCode *int
-	if req.Body.ExitCode != nil {
-		v := int(*req.Body.ExitCode)
-		exitCode = &v
-	}
-
 	result := store.JobResult{
 		Status:     status,
-		ExitCode:   exitCode,
+		ExitCode:   req.Body.ExitCode,
 		Stdout:     stdout,
 		Stderr:     stderr,
 		DurationMS: req.Body.DurationMs,
@@ -255,17 +249,12 @@ func toControlJob(job *store.Job) (controlapi.Job, error) {
 	if err != nil {
 		return controlapi.Job{}, err
 	}
-	var exit *int32
-	if job.ExitCode != nil {
-		v := int32(*job.ExitCode)
-		exit = &v
-	}
 	return controlapi.Job{
 		Id:         id,
 		MachineId:  machineID,
 		Status:     controlapi.DadJokeCommonJobStatus(job.Status),
 		Payload:    job.Payload,
-		ExitCode:   exit,
+		ExitCode:   job.ExitCode,
 		Stdout:     job.Stdout,
 		Stderr:     job.Stderr,
 		DurationMs: job.DurationMS,
@@ -285,17 +274,12 @@ func toAgentJob(job *store.Job) (agentapi.Job, error) {
 	if err != nil {
 		return agentapi.Job{}, err
 	}
-	var exit *int32
-	if job.ExitCode != nil {
-		v := int32(*job.ExitCode)
-		exit = &v
-	}
 	return agentapi.Job{
 		Id:         id,
 		MachineId:  machineID,
 		Status:     agentapi.DadJokeCommonJobStatus(job.Status),
 		Payload:    job.Payload,
-		ExitCode:   exit,
+		ExitCode:   job.ExitCode,
 		Stdout:     job.Stdout,
 		Stderr:     job.Stderr,
 		DurationMs: job.DurationMS,

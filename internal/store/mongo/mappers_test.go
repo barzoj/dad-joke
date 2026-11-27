@@ -63,7 +63,7 @@ func TestPolicyJobEventRoundTrip(t *testing.T) {
 	if string(pol.Document) != `{"a":1}` || pol.Version != 2 {
 		t.Fatal(pol)
 	}
-	code := 0
+	code := int32(0)
 	dur := int64(12)
 	claimed := now
 	job := jobFromDoc(jobToDoc(&store.Job{

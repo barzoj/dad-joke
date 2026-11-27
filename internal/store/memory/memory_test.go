@@ -157,7 +157,7 @@ func TestPolicyJobEventUser(t *testing.T) {
 	if _, err := st.Jobs().Claim(ctx, "t", "m", job.ID, time.Now()); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("second claim: %v", err)
 	}
-	code := 0
+	code := int32(0)
 	dur := int64(5)
 	if err := st.Jobs().Complete(ctx, "t", "m", job.ID, store.JobResult{
 		Status: store.JobSucceeded, ExitCode: &code, Stdout: "ok", DurationMS: &dur, FinishedAt: time.Now(),
