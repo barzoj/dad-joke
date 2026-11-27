@@ -144,11 +144,34 @@ func decodeToolJSON(t *testing.T, res *mcpsdk.CallToolResult) any {
 	if res.IsError {
 		t.Fatalf("tool error: %s", toolText(t, res))
 	}
+	assertStructuredContentObject(t, res)
 	var v any
 	if err := json.Unmarshal([]byte(toolText(t, res)), &v); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	return v
+}
+
+// assertStructuredContentObject enforces MCP CallToolResult.structuredContent
+// is a JSON object (Record<string, unknown>), never an array or primitive.
+func assertStructuredContentObject(t *testing.T, res *mcpsdk.CallToolResult) {
+	t.Helper()
+	if res == nil || res.StructuredContent == nil {
+		return
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal StructuredContent: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("StructuredContent must be a JSON object, got %s", raw)
+	}
+	text := toolText(t, res)
+	var textMap map[string]any
+	if err := json.Unmarshal([]byte(text), &textMap); err != nil {
+		t.Fatalf("content text must be a JSON object matching structuredContent; text=%s sc=%s", text, raw)
+	}
 }
 
 func postJSON(t *testing.T, method, url, bearer string, body any) (int, []byte) {
@@ -279,6 +302,19 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 	patA := issuePAT(t, base, sessionA)
 
 	mcpA := mcpConnect(t, base, patA)
+
+	// Empty-list contract: structuredContent is an object with machines:[] / tokens:[].
+	emptyMachines := decodeToolJSON(t, callTool(t, mcpA, "list_machines", nil)).(map[string]any)
+	if arr, _ := emptyMachines["machines"].([]any); arr == nil || len(arr) != 0 {
+		t.Fatalf("empty list_machines = %v (want machines:[])", emptyMachines)
+	}
+	emptyTokens := decodeToolJSON(t, callTool(t, mcpA, "manage_agent_tokens", map[string]any{
+		"action": "list",
+	})).(map[string]any)
+	if arr, _ := emptyTokens["tokens"].([]any); arr == nil || len(arr) != 0 {
+		t.Fatalf("empty manage_agent_tokens list = %v (want tokens:[])", emptyTokens)
+	}
+
 	created := decodeToolJSON(t, callTool(t, mcpA, "manage_agent_tokens", map[string]any{
 		"action": "create", "name": "agent-a",
 	})).(map[string]any)
@@ -294,9 +330,10 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 		t.Fatalf("heartbeat: %d %v", code, hb)
 	}
 
-	machines := decodeToolJSON(t, callTool(t, mcpA, "list_machines", nil)).([]any)
+	machinesObj := decodeToolJSON(t, callTool(t, mcpA, "list_machines", nil)).(map[string]any)
+	machines, _ := machinesObj["machines"].([]any)
 	if len(machines) != 1 {
-		t.Fatalf("list_machines = %v", machines)
+		t.Fatalf("list_machines = %v", machinesObj)
 	}
 
 	pol := decodeToolJSON(t, callTool(t, mcpA, "set_policy", map[string]any{
@@ -377,14 +414,16 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 	patB := issuePAT(t, base, sessionB)
 	mcpB := mcpConnect(t, base, patB)
 
-	listB := decodeToolJSON(t, callTool(t, mcpB, "list_machines", nil)).([]any)
+	listBObj := decodeToolJSON(t, callTool(t, mcpB, "list_machines", nil)).(map[string]any)
+	listB, _ := listBObj["machines"].([]any)
 	if len(listB) != 0 {
-		t.Fatalf("tenant B saw machines: %v", listB)
+		t.Fatalf("tenant B saw machines: %v", listBObj)
 	}
 	res := callTool(t, mcpB, "get_job", map[string]any{"job_id": jobID})
 	if !res.IsError {
 		t.Fatal("tenant B get_job should fail")
 	}
+	assertStructuredContentObject(t, res)
 	res = callTool(t, mcpB, "list_events", map[string]any{"machine_id": machineID})
 	if res.IsError {
 		// error is fine

@@ -8,6 +8,7 @@
 # Generated API artifacts (TypeSpec → OpenAPI → oapi-codegen)
 /gen/
 /node_modules/
+e2e/mcp-sdk/node_modules/
 
 # IDE / OS
 .idea/
