@@ -7,9 +7,10 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  release:
+  release-windows:
     name: Build & publish Windows release
     runs-on: windows-latest
     defaults:
@@ -85,3 +86,158 @@ jobs:
             dist/dad-joke-windows-amd64.exe
             dist/dad-joke-windows-amd64.exe.sha256
             dist/manifest.json
+
+  release-ghcr:
+    name: Multi-arch GHCR image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve tag version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          case "${tag}" in
+            v*) ;;
+            *) echo "expected tag starting with v, got ${tag}" >&2; exit 1 ;;
+          esac
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER}/dad-joke-server" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build multi-arch image (load amd64 for smoke)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2ea9 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:smoke-amd64
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start Mongo for smoke
+        run: |
+          set -euo pipefail
+          docker network create dj-release-smoke
+          docker run -d --name dj-release-mongo --network dj-release-smoke \
+            --health-cmd "mongosh --eval \"db.adminCommand('ping')\"" \
+            --health-interval 5s --health-timeout 5s --health-retries 10 \
+            mongo:7
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' dj-release-mongo 2>/dev/null || echo starting)"
+            if [[ "${status}" == "healthy" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' dj-release-mongo)" = "healthy"
+
+      - name: Smoke amd64 (/healthz, non-root, read-only rootfs)
+        run: |
+          set -euo pipefail
+          img="${{ steps.meta.outputs.image }}:smoke-amd64"
+          user="$(docker image inspect "${img}" --format '{{.Config.User}}')"
+          echo "Config.User=${user}"
+          case "${user}" in
+            nonroot|nonroot:nonroot|65532|65532:65532) ;;
+            *) echo "expected nonroot/65532, got ${user}" >&2; exit 1 ;;
+          esac
+          cid="$(docker run -d --name dj-release-server --network dj-release-smoke \
+            --read-only --tmpfs /tmp --user 65532:65532 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            -e DAD_JOKE_MONGODB_URI=mongodb://dj-release-mongo:27017 \
+            -e DAD_JOKE_MONGODB_DATABASE=dadjoke \
+            -e DAD_JOKE_HTTP_ADDR=:8080 \
+            -e COOKIE_SECURE=false \
+            -e ALLOW_SIGNUP=false \
+            "${img}")"
+          ok=0
+          for i in $(seq 1 30); do
+            ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
+            if docker run --rm --network dj-release-smoke curlimages/curl:8.12.1 \
+              -fsS "http://${ip}/healthz" | grep -q '"status":"ok"'; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          docker logs "${cid}" || true
+          test "${ok}" = "1"
+
+      - name: Build + smoke linux/arm64 via QEMU
+        run: |
+          set -euo pipefail
+          img="${{ steps.meta.outputs.image }}:smoke-arm64"
+          docker buildx build --platform linux/arm64 -t "${img}" --load .
+          # Boot/run the arm64 image under QEMU and hit /healthz.
+          cid="$(docker run -d --platform linux/arm64 --name dj-release-server-arm \
+            --network dj-release-smoke \
+            --read-only --tmpfs /tmp --user 65532:65532 \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            -e DAD_JOKE_MONGODB_URI=mongodb://dj-release-mongo:27017 \
+            -e DAD_JOKE_MONGODB_DATABASE=dadjoke_arm \
+            -e DAD_JOKE_HTTP_ADDR=:8080 \
+            -e COOKIE_SECURE=false \
+            -e ALLOW_SIGNUP=false \
+            "${img}")"
+          ok=0
+          for i in $(seq 1 60); do
+            ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
+            if [[ -n "${ip}" ]] && docker run --rm --network dj-release-smoke curlimages/curl:8.12.1 \
+              -fsS "http://${ip}/healthz" | grep -q '"status":"ok"'; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          docker logs "${cid}" || true
+          test "${ok}" = "1"
+
+      - name: Push multi-arch image (tag + latest)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2ea9 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Assert GHCR tags exist
+        run: |
+          set -euo pipefail
+          img="${{ steps.meta.outputs.image }}"
+          tag="${{ steps.meta.outputs.tag }}"
+          docker buildx imagetools inspect "${img}:${tag}" | tee /tmp/inspect-tag.txt
+          docker buildx imagetools inspect "${img}:latest" | tee /tmp/inspect-latest.txt
+          grep -q 'linux/amd64' /tmp/inspect-tag.txt
+          grep -q 'linux/arm64' /tmp/inspect-tag.txt
+          grep -q 'linux/amd64' /tmp/inspect-latest.txt
+          grep -q 'linux/arm64' /tmp/inspect-latest.txt
+
+      - name: Cleanup smoke containers
+        if: always()
+        run: |
+          docker rm -f dj-release-server dj-release-server-arm dj-release-mongo >/dev/null 2>&1 || true
+          docker network rm dj-release-smoke >/dev/null 2>&1 || true
