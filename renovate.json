@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests"
+  ],
+  "enabledManagers": [
+    "gomod",
+    "npm",
+    "dockerfile",
+    "github-actions"
+  ],
+  "timezone": "Etc/UTC",
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "Group Go module patch/minor updates",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "go modules (non-major)"
+    },
+    {
+      "description": "Group npm patch/minor updates (TypeSpec)",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "npm (non-major)"
+    },
+    {
+      "description": "Group Docker digest/patch/minor updates",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "groupName": "docker base images"
+    },
+    {
+      "description": "Group GitHub Actions digest/patch/minor updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "groupName": "github-actions (non-major)"
+    },
+    {
+      "description": "Never automerge major updates — require human review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}

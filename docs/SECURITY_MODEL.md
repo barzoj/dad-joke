@@ -36,7 +36,7 @@ These controls exist in the current Windows agent / repository:
 - **HTTPS download policy** — release API and asset URLs must be HTTPS (loopback HTTP only for local tests); redirects are re-validated.
 - **Cryptographic update verification** — staged `dad-joke-windows-amd64.exe` must match the published `.sha256` sidecar before apply.
 - **Apply path allowlist** — `apply-update` may only replace the installed binary from a staging path under `ProgramData\DadJoke\updates\...`.
-- **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), and `golangci-lint` on PRs, `main`, and a weekly schedule.
+- **CI security stack** — CodeQL (`go`, `actions`), `govulncheck`, `gosec` (SARIF → code scanning), `golangci-lint`, Renovate config validation, and Dependency Review (high/critical CVEs + AGPL-incompatible licenses) on PRs/`main`/weekly as applicable.
 
 ## Invariant contracts (enforced as components land)
 
