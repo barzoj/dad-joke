@@ -1,0 +1,39 @@
+# Local development stack: hardened server + MongoDB.
+# Production templates (compose.prod.yml, Caddyfile, backups) are out of scope here.
+
+services:
+  mongo:
+    image: mongo:7
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build: .
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DAD_JOKE_MONGODB_URI: mongodb://mongo:27017
+      DAD_JOKE_MONGODB_DATABASE: dadjoke
+      DAD_JOKE_HTTP_ADDR: ":8080"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "65532:65532"
+    tmpfs:
+      - /tmp
+
+volumes:
+  mongo_data:
