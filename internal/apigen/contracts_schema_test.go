@@ -94,6 +94,18 @@ func TestOpenAPI_SeparateSecuritySchemes(t *testing.T) {
 	if !strings.Contains(controlText, "CreateJobRequest:") || !strings.Contains(controlText, "Job:") {
 		t.Fatal("control OpenAPI missing Job / CreateJobRequest schemas")
 	}
+	if !strings.Contains(agentText, "/v1/events:") {
+		t.Fatal("agent OpenAPI missing /v1/events")
+	}
+	if !strings.Contains(agentText, "PostEventsRequest:") || !strings.Contains(agentText, "EventIngestItem:") {
+		t.Fatal("agent OpenAPI missing PostEventsRequest / EventIngestItem schemas")
+	}
+	if !strings.Contains(controlText, "/v1/machines/{machine_id}/events:") {
+		t.Fatal("control OpenAPI missing /v1/machines/{machine_id}/events")
+	}
+	if !strings.Contains(controlText, "EventListResponse:") || !strings.Contains(controlText, "MachineEvent:") {
+		t.Fatal("control OpenAPI missing EventListResponse / MachineEvent schemas")
+	}
 }
 
 func TestGoModels_RawTokenOnlyOnCreatedResponses(t *testing.T) {

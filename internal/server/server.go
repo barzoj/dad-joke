@@ -165,6 +165,8 @@ func New(cfg Config) (*Server, error) {
 
 	root.Handle("/v1/heartbeat", agentHandler)
 	root.Handle("/v1/policy", agentHandler)
+	// Agent event ingest: tighter 256 KiB body limit (413 when exceeded).
+	root.Handle("POST /v1/events", limitBody(agentHandler, int64(store.EventBatchMaxBytes)))
 	// Agent claim/result share the /v1/jobs prefix with ControlAPI get/cancel;
 	// method+path patterns keep agent auth on these mutating agent endpoints.
 	root.Handle("POST /v1/jobs/{id}/claim", agentHandler)

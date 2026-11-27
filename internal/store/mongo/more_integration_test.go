@@ -106,7 +106,7 @@ func TestIntegration_UsersPoliciesJobsEvents(t *testing.T) {
 		t.Fatal(err) // idempotent
 	}
 	listed, err := st.Events().List(ctx, store.EventQuery{TenantID: ten.ID, MachineID: machineID, Limit: 10})
-	if err != nil || len(listed) != 1 {
+	if err != nil || len(listed.Events) != 1 {
 		t.Fatalf("list events: %v %+v", err, listed)
 	}
 
@@ -128,43 +128,46 @@ func TestIntegration_EventsTTLIndex(t *testing.T) {
 	}
 	defer closeCursor(ctx, cur)
 
-	const wantName = "ttl_events_ts"
-	const wantExpire int32 = 30 * 24 * 60 * 60
-	var found bool
+	wantExpire := int64(store.EventTTLSeconds)
+	byName := make(map[string]bson.M)
 	for cur.Next(ctx) {
 		var spec bson.M
 		if err := cur.Decode(&spec); err != nil {
 			t.Fatal(err)
 		}
 		name, _ := spec["name"].(string)
-		if name != wantName {
-			continue
-		}
-		found = true
-		expire, ok := spec["expireAfterSeconds"]
-		if !ok {
-			t.Fatalf("ttl index missing expireAfterSeconds: %#v", spec)
-		}
-		var got int32
-		switch v := expire.(type) {
-		case int32:
-			got = v
-		case int64:
-			got = int32(v)
-		case int:
-			got = int32(v)
-		default:
-			t.Fatalf("unexpected expireAfterSeconds type %T (%v)", expire, expire)
-		}
-		if got != wantExpire {
-			t.Fatalf("expireAfterSeconds = %d, want %d", got, wantExpire)
-		}
+		byName[name] = spec
 	}
 	if err := cur.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("index %q not found", wantName)
+
+	// Explicitly list collection index specs (AC3 / AC7).
+	required := []string{"_id_", "uniq_event_idempotency", "idx_events_tenant_machine_ts", "ttl_events_ts"}
+	for _, name := range required {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("events index %q missing; have %#v", name, byName)
+		}
+	}
+
+	ttl := byName["ttl_events_ts"]
+	expire, ok := ttl["expireAfterSeconds"]
+	if !ok {
+		t.Fatalf("ttl index missing expireAfterSeconds: %#v", ttl)
+	}
+	var got int64
+	switch v := expire.(type) {
+	case int32:
+		got = int64(v)
+	case int64:
+		got = v
+	case int:
+		got = int64(v)
+	default:
+		t.Fatalf("unexpected expireAfterSeconds type %T (%v)", expire, expire)
+	}
+	if got != wantExpire {
+		t.Fatalf("expireAfterSeconds = %d, want %d (30*24*3600)", got, wantExpire)
 	}
 }
 

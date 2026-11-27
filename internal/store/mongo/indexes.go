@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/barzoj/dad-joke/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -132,7 +133,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 				},
 				{
 					Keys:    bson.D{{Key: "ts", Value: 1}},
-					Options: options.Index().SetExpireAfterSeconds(30 * 24 * 60 * 60).SetName("ttl_events_ts"),
+					Options: options.Index().SetExpireAfterSeconds(store.EventTTLSeconds).SetName("ttl_events_ts"),
 				},
 			},
 		},
