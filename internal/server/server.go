@@ -1,4 +1,4 @@
-// Package server implements the Dad Joke HTTP control-plane skeleton.
+// Package server implements the Dad Joke HTTP control-plane server.
 package server
 
 import (
@@ -11,6 +11,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/barzoj/dad-joke/gen/go/agentapi"
+	"github.com/barzoj/dad-joke/gen/go/controlapi"
+	"github.com/barzoj/dad-joke/internal/audit"
+	"github.com/barzoj/dad-joke/internal/ratelimit"
 	"github.com/barzoj/dad-joke/internal/store"
 )
 
@@ -22,6 +26,10 @@ const (
 	readTimeout       = 15 * time.Second
 	writeTimeout      = 30 * time.Second
 	idleTimeout       = 60 * time.Second
+
+	defaultAuthFailMax = 30
+	defaultMutationMax = 120
+	defaultLimitWindow = time.Minute
 )
 
 // Config configures the HTTP server.
@@ -29,6 +37,11 @@ type Config struct {
 	Addr  string
 	Store store.Store
 	Log   *log.Logger
+
+	// Optional rate-limit overrides (nil → defaults). Useful in tests.
+	AuthFailureLimiter *ratelimit.Limiter
+	MutationLimiter    *ratelimit.Limiter
+	Clock              func() time.Time
 }
 
 // Server is a hardened HTTP listener.
@@ -52,10 +65,63 @@ func New(cfg Config) (*Server, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+
+	authFail := cfg.AuthFailureLimiter
+	if authFail == nil {
+		authFail = ratelimit.New(ratelimit.Config{
+			Window:  defaultLimitWindow,
+			MaxHits: defaultAuthFailMax,
+			Clock:   clock,
+		})
+	}
+	mutations := cfg.MutationLimiter
+	if mutations == nil {
+		mutations = ratelimit.New(ratelimit.Config{
+			Window:  defaultLimitWindow,
+			MaxHits: defaultMutationMax,
+			Clock:   clock,
+		})
+	}
+
+	authn := NewAuthenticator(AuthConfig{
+		Store:        cfg.Store,
+		AuthFailures: authFail,
+		Mutations:    mutations,
+		Clock:        clock,
+	})
+
+	control := &ControlAPI{
+		Store: cfg.Store,
+		Audit: audit.Logger{Store: cfg.Store.Audits(), Clock: clock},
+		Clock: clock,
+	}
+	agent := &AgentAPI{Store: cfg.Store, Clock: clock}
+
+	root := http.NewServeMux()
 	s := &Server{cfg: cfg, logger: logger}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	handler := securityHeaders(limitBody(mux, maxRequestBytes))
+	root.HandleFunc("GET /healthz", s.handleHealthz)
+
+	controlHandler := controlapi.HandlerWithOptions(
+		controlapi.NewStrictHandler(control, nil),
+		controlapi.StdHTTPServerOptions{
+			Middlewares: []controlapi.MiddlewareFunc{authn.Middleware(store.TokenKindPAT)},
+		},
+	)
+	agentHandler := agentapi.HandlerWithOptions(
+		agentapi.NewStrictHandler(agent, nil),
+		agentapi.StdHTTPServerOptions{
+			Middlewares: []agentapi.MiddlewareFunc{authn.Middleware(store.TokenKindAgent)},
+		},
+	)
+
+	root.Handle("/v1/heartbeat", agentHandler)
+	root.Handle("/v1/", controlHandler)
+
+	handler := securityHeaders(limitBody(root, maxRequestBytes))
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           handler,
