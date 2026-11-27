@@ -13,3 +13,4 @@
 # Test / coverage
 *.test
 coverage.out
+scripts/__pycache__/

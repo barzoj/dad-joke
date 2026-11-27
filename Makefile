@@ -9,10 +9,15 @@ RELEASE_API_URL ?= https://api.github.com/repos/barzoj/dad-joke/releases/latest
 
 LDFLAGS := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).ReleaseAPIURL=$(RELEASE_API_URL)
 
-.PHONY: test build build-windows vet
+.PHONY: test cover build build-windows vet
 
 test:
 	CGO_ENABLED=0 go test ./...
+
+# Race + atomic coverprofile (Linux/macOS with CGO). Enforces internal/ floor via scripts/coverage-report.py.
+cover:
+	CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	python3 scripts/coverage-report.py --profile coverage.out --internal-min 70
 
 vet:
 	go vet ./...

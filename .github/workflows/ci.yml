@@ -10,16 +10,18 @@ jobs:
   test-and-build:
     name: Test & build (windows-amd64)
     runs-on: windows-latest
+    permissions:
+      contents: read
     defaults:
       run:
         shell: pwsh
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26.x"
 
@@ -75,3 +77,110 @@ jobs:
           DAD_JOKE_EXPECT_COMMIT: ${{ steps.meta.outputs.commit }}
         # TC-03..TC-05 include self-update + health windows; allow ample time.
         run: go test -tags=e2e -v -timeout 20m ./e2e/...
+
+  coverage:
+    name: Coverage (linux-amd64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push coverage badge JSON to the orphan `badges` branch on main
+      pull-requests: write # sticky PR coverage comment (no-op / soft-fail on fork PRs)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.x"
+
+      - name: Unit tests with race + coverage
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Test coverage reporter
+        run: python3 scripts/coverage-report_test.py
+
+      - name: List changed Go files
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > changed-go.txt
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only --diff-filter=ACMRTUXB \
+              "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+              -- '*.go' \
+              | grep -vE '(^|/)gen/' \
+              | tee changed-go.txt \
+              || true
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            git diff --name-only --diff-filter=ACMRTUXB \
+              "${{ github.event.before }}...${{ github.sha }}" \
+              -- '*.go' \
+              | grep -vE '(^|/)gen/' \
+              | tee changed-go.txt \
+              || true
+          fi
+
+      - name: Coverage report + internal/ threshold
+        id: report
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Floor is slightly below measured internal/ coverage on linux/amd64 (~71%)
+          # so CI gates regression without flaking on small platform variance.
+          python3 scripts/coverage-report.py \
+            --profile coverage.out \
+            --internal-min 70 \
+            --summary "${GITHUB_STEP_SUMMARY}" \
+            --comment coverage-comment.md \
+            --badge coverage-badge.json \
+            --changed-files changed-go.txt
+
+      - name: Sticky PR coverage comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db # v2.9.2
+        with:
+          header: coverage
+          path: coverage-comment.md
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish coverage badge (badges branch)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shields.io endpoint JSON lives on an orphan `badges` branch so badge
+          # updates never retrigger CI on main and need no third-party secrets.
+          badge_src="${GITHUB_WORKSPACE}/coverage-badge.json"
+          work=$(mktemp -d)
+          # GITHUB_TOKEN is injected by Actions; use x-access-token for HTTPS push.
+          auth_remote="https://x-access-token:${GITHUB_TOKEN}@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+
+          git clone --depth 1 --branch badges "$auth_remote" "$work" 2>/dev/null \
+            || (
+              mkdir -p "$work"
+              cd "$work"
+              git init
+              git checkout -b badges
+              git remote add origin "$auth_remote"
+            )
+
+          cp "$badge_src" "$work/coverage.json"
+          cd "$work"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.json
+          if git diff --cached --quiet; then
+            echo "badge unchanged"
+            exit 0
+          fi
+          git commit -m "chore: update coverage badge"
+          git push -u origin HEAD:badges
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
