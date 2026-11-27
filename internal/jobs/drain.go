@@ -5,11 +5,6 @@ import (
 	"time"
 )
 
-// pipeDrainGrace is how long Run waits for stdout/stderr copy goroutines
-// after the child process has exited (or been killed) before forcibly closing
-// the read pipes so result posting cannot stall forever.
-const pipeDrainGrace = 3 * time.Second
-
 // awaitWaitGroup waits for wg up to timeout. On expiry it runs onTimeout
 // (typically closing pipe readers) and then waits for wg to finish.
 // Returns whether the wait completed before the timeout.

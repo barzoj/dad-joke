@@ -28,6 +28,11 @@ import (
 // remote script process.
 type JobObjectExecutor struct{}
 
+// pipeDrainGrace is how long Run waits for stdout/stderr copy goroutines
+// after the child process has exited (or been killed) before forcibly closing
+// the read pipes so result posting cannot stall forever.
+const pipeDrainGrace = 3 * time.Second
+
 // Run implements Executor.
 func (JobObjectExecutor) Run(ctx context.Context, jobType, payload string, timeout time.Duration) (ExecResult, error) {
 	if err := ValidateClaimed(jobType, payload); err != nil {
