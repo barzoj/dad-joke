@@ -1,5 +1,5 @@
-# Local development stack: hardened server + MongoDB.
-# Production templates (compose.prod.yml, Caddyfile, backups) are out of scope here.
+# Local development stack: hardened server + MongoDB (ports published for smoke).
+# Production self-host templates: deploy/compose.prod.yml + deploy/Caddyfile.
 
 services:
   mongo:

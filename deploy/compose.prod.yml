@@ -1,0 +1,95 @@
+# Production self-host stack (public template).
+#
+# Standalone:
+#   cp deploy/env.example deploy/.env   # edit API_DOMAIN / MCP_DOMAIN / ALLOW_SIGNUP
+#   docker compose -f deploy/compose.prod.yml --env-file deploy/.env up -d
+#
+# MongoDB (27017) and the app server (8080) are NOT published to the host —
+# only Caddy listens on 80/443. Local development remains docker-compose.yml
+# at the repository root (builds from Dockerfile, publishes 8080 for smoke).
+#
+# Caddy site addresses: caddy-entrypoint.sh dedupes API_DOMAIN / MCP_DOMAIN into
+# one site block (single host when equal; "a, b" when distinct).
+
+name: dad-joke
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  server:
+    image: ghcr.io/barzoj/dad-joke-server:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      DAD_JOKE_MONGODB_URI: mongodb://mongo:27017
+      DAD_JOKE_MONGODB_DATABASE: ${DAD_JOKE_MONGODB_DATABASE:-dadjoke}
+      DAD_JOKE_HTTP_ADDR: ":8080"
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-false}
+      COOKIE_SECURE: "true"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "65532:65532"
+    tmpfs:
+      - /tmp
+    networks:
+      - internal
+    # Distroless has no shell/curl for an in-container probe; readiness is
+    # verified by scripts/smoke-e2e.sh (and CI) against the published frontend.
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
+      MCP_DOMAIN: ${MCP_DOMAIN:?set MCP_DOMAIN in .env}
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile.tmpl:ro
+      - ./caddy-entrypoint.sh:/entrypoint.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+      - edge
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    tmpfs:
+      - /tmp
+
+networks:
+  internal:
+    internal: true
+  edge: {}
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

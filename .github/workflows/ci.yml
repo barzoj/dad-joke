@@ -134,8 +134,195 @@ jobs:
           DAD_JOKE_DIST: ${{ github.workspace }}\dist
           DAD_JOKE_EXPECT_VERSION: ${{ steps.meta.outputs.version }}
           DAD_JOKE_EXPECT_COMMIT: ${{ steps.meta.outputs.commit }}
-        # TC-03..TC-05 include self-update + health windows; allow ample time.
+        # TC-03..TC-05 / TC-14 / TC-16 include service + job windows; allow ample time.
         run: go test -tags=e2e -v -timeout 20m ./e2e/...
+
+  linux-e2e:
+    name: Linux full-stack E2E
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval \"db.adminCommand('ping')\""
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Generate API (TypeSpec + oapi-codegen)
+        run: make generate
+
+      - name: Linux full-stack E2E (MCP + agent client + fail-closed)
+        env:
+          CGO_ENABLED: "0"
+          DAD_JOKE_MONGODB_URI: mongodb://127.0.0.1:27017
+        run: go test -tags=e2e -v -timeout 15m ./e2e/linux/...
+
+  compose-smoke:
+    name: Compose image smoke + smoke-e2e.sh
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build server image
+        run: docker build -t dad-joke-server:ci .
+
+      - name: Verify non-root image user
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect dad-joke-server:ci --format '{{.Config.User}}')"
+          echo "Config.User=${user}"
+          case "${user}" in
+            nonroot|nonroot:nonroot|65532|65532:65532) ;;
+            *) echo "expected nonroot/65532, got ${user}" >&2; exit 1 ;;
+          esac
+
+      - name: Validate compose files
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml config >/dev/null
+          API_DOMAIN=api.example.com MCP_DOMAIN=mcp.example.com \
+            docker compose -f deploy/compose.prod.yml config >/dev/null
+          API_DOMAIN=app.example.com MCP_DOMAIN=app.example.com \
+            docker compose -f deploy/compose.prod.yml config >/dev/null
+
+      - name: Validate Caddyfile (distinct + identical domains)
+        run: |
+          set -euo pipefail
+          # Distinct domains → site line "{$API_DOMAIN}, {$MCP_DOMAIN}"
+          API_DOMAIN=api.example.com MCP_DOMAIN=mcp.example.com \
+            ./scripts/render-caddyfile.sh deploy/Caddyfile > /tmp/Caddyfile.distinct
+          grep -E '^\{\$API_DOMAIN\}, \{\$MCP_DOMAIN\} \{' /tmp/Caddyfile.distinct
+          # Identical domains → single "{$API_DOMAIN}" site line (never ambiguous)
+          API_DOMAIN=app.example.com MCP_DOMAIN=app.example.com \
+            ./scripts/render-caddyfile.sh deploy/Caddyfile > /tmp/Caddyfile.identical
+          grep -E '^\{\$API_DOMAIN\} \{' /tmp/Caddyfile.identical
+          if grep -E '^\{\$API_DOMAIN\}, \{\$MCP_DOMAIN\} \{' /tmp/Caddyfile.identical; then
+            echo "identical-domain render must be a single-host site line" >&2
+            exit 1
+          fi
+          # caddy adapt --validate with env substitution for both renders
+          docker run --rm \
+            -e API_DOMAIN=api.example.com -e MCP_DOMAIN=mcp.example.com \
+            -v /tmp/Caddyfile.distinct:/etc/caddy/Caddyfile:ro \
+            caddy:2.10-alpine \
+            caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate
+          docker run --rm \
+            -e API_DOMAIN=app.example.com -e MCP_DOMAIN=app.example.com \
+            -v /tmp/Caddyfile.identical:/etc/caddy/Caddyfile:ro \
+            caddy:2.10-alpine \
+            caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate
+
+      - name: Start dev compose stack
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml up -d --build
+          docker compose -f docker-compose.yml ps
+
+      - name: Assert compose hardening + /healthz
+        run: |
+          set -euo pipefail
+          sid="$(docker compose -f docker-compose.yml ps -q server)"
+          user="$(docker inspect -f '{{.Config.User}}' "${sid}")"
+          ro="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "${sid}")"
+          echo "User=${user} ReadonlyRootfs=${ro}"
+          case "${user}" in
+            nonroot|nonroot:nonroot|65532|65532:65532) ;;
+            *) echo "expected nonroot/65532, got ${user}" >&2; exit 1 ;;
+          esac
+          test "${ro}" = "true"
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8080/healthz | grep -q '"status":"ok"'; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "${ok}" = "1"
+
+      - name: Read-only throwaway container /healthz
+        run: |
+          set -euo pipefail
+          # Same image, explicit hardening, on the compose network.
+          sid="$(docker compose -f docker-compose.yml ps -q server)"
+          net="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "${sid}")"
+          cid="$(docker run -d \
+            --network "${net}" \
+            --read-only \
+            --tmpfs /tmp \
+            --user 65532:65532 \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            -e DAD_JOKE_MONGODB_URI=mongodb://mongo:27017 \
+            -e DAD_JOKE_MONGODB_DATABASE=dadjoke_ro_smoke \
+            -e DAD_JOKE_HTTP_ADDR=:8080 \
+            -e COOKIE_SECURE=false \
+            -e ALLOW_SIGNUP=true \
+            dad-joke-server:ci)"
+          cleanup() { docker rm -f "${cid}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          ok=0
+          for i in $(seq 1 45); do
+            ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}")"
+            if [[ -n "${ip}" ]] && docker run --rm --network "${net}" curlimages/curl:8.12.1 \
+              -fsS "http://${ip}:8080/healthz" | grep -q '"status":"ok"'; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          docker logs "${cid}" || true
+          test "${ok}" = "1"
+
+      - name: Run scripts/smoke-e2e.sh against compose
+        run: |
+          set -euo pipefail
+          BASE_URL=http://127.0.0.1:8080 ./scripts/smoke-e2e.sh
+
+      - name: Tear down compose
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
+
+  no-leak:
+    name: No-leak public templates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Scan deploy/scripts/docs/workflows
+        run: ./scripts/no-leak-check.sh
 
   coverage:
     name: Coverage (linux-amd64)

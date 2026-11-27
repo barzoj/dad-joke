@@ -138,9 +138,16 @@ Built on `go.mongodb.org/mongo-driver/v2`. Private BSON mapper structs stay insi
 - `cmd/server bootstrap --tenant <name>` creates a tenant and the first 256-bit `dj_pat_...` API key (`crypto/rand`). Only the SHA-256 hash and non-secret prefix/metadata are stored; the raw key is printed once to stdout and must never appear in DB or logs.
 - `cmd/server create-user --email ... --password ... [--tenant-name ...]` creates a tenant + argon2id user in MongoDB even when `ALLOW_SIGNUP=false` (password may also come from `DAD_JOKE_CREATE_USER_PASSWORD`).
 
-### Hardened container (dev)
+### Hardened container & self-host templates
 
-Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + static compile, then `gcr.io/distroless/static-debian12:nonroot` (final image has no Node/Go toolchain). Works from a fresh checkout because `gen/` is gitignored and rebuilt in-image. Dev `docker-compose.yml` runs `server` (non-root, `read_only: true`, `no-new-privileges`, `cap_drop: ALL`) with MongoDB (`--wiredTigerCacheSizeGB` capped). CI scans the image with Trivy (`HIGH`/`CRITICAL`). Production compose/Caddy/backups are not part of this repository.
+Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + static compile, then `gcr.io/distroless/static-debian12:nonroot` (final image has no Node/Go toolchain). Works from a fresh checkout because `gen/` is gitignored and rebuilt in-image.
+
+| Surface | Behavior |
+| --- | --- |
+| **Dev compose** (`docker-compose.yml`) | Builds locally; publishes `8080` / `27017`; `COOKIE_SECURE=false`; server runs non-root (`65532`), `read_only: true`, `no-new-privileges`, `cap_drop: ALL`; MongoDB `--wiredTigerCacheSizeGB` capped. |
+| **Prod compose** (`deploy/compose.prod.yml`) | Pulls `ghcr.io/barzoj/dad-joke-server:${IMAGE_TAG:-latest}`; **does not** publish `8080` or `27017`; `COOKIE_SECURE=true`; same hardening flags; Caddy terminates HTTPS on 80/443. `deploy/caddy-entrypoint.sh` renders `deploy/Caddyfile` from `${API_DOMAIN}` / `${MCP_DOMAIN}` only into **one** site block (single host when equal; comma-separated when distinct — Caddy rejects duplicate site addresses). |
+| **Ops scripts** | `scripts/backup-mongo.sh` (`mongodump --archive --gzip` + retention); `scripts/smoke-e2e.sh` (healthz → signup → PAT/agent token → heartbeat → MCP `tools/list` / `list_machines`); `scripts/no-leak-check.sh` (CI sterility gate). |
+| **CI / release** | Trivy `HIGH`/`CRITICAL` image scan; Compose smoke runs `smoke-e2e.sh` end-to-end; Caddyfile validated (`caddy adapt --validate`) for both equal and distinct domains; `v*` tags publish Windows `.exe`+`.sha256` and multi-arch GHCR images by pushing an immutable `sha-<commit>` candidate, smoke-testing that exact digest on `amd64`+`arm64`, then promoting the same digest to `v0.0.x` and `latest`. |
 
 ## Windows agent runtime (current)
 
@@ -169,4 +176,13 @@ Job contract fields used by the agent (from `api/common/jobs.tsp`): `type` (`pow
 
 ## Independent Review & CI
 
-Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI (API generate + race test/vet including live MongoDB DAL tests, Windows test/build, Linux race+coverage with an `internal/` floor excluding `gen/`, and the Security workflow: CodeQL, govulncheck, gosec, golangci-lint, Trivy image scan).
+Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI:
+
+- API generate + race test/vet (live MongoDB DAL)
+- Windows test/build + native `windows-latest` E2E (`-tags=e2e`: install/ACL, update, heartbeat, jobs Job Object timeout/truncation, **Restart-Service** config+token persistence)
+- Linux full-stack E2E (`e2e/linux`, `-tags=e2e`: register → PAT/`dj_agt_` → heartbeat → MCP `list_machines`/`set_policy`/`run_script`/`get_job`/`list_events` → cross-tenant isolation → revocation `401` → fail-closed MongoDB)
+- Compose image smoke (non-root, read-only rootfs, `/healthz`) + `scripts/smoke-e2e.sh`
+- No-leak gate over public deploy/scripts/docs/workflows
+- Linux race+coverage with an `internal/` floor excluding `gen/`
+- Security workflow: CodeQL, govulncheck, gosec, golangci-lint, Trivy image scan
+

@@ -1,0 +1,23 @@
+# Self-host reverse proxy template.
+#
+# Domain inputs (the only hostname knobs): API_DOMAIN and MCP_DOMAIN.
+# deploy/caddy-entrypoint.sh (and scripts/render-caddyfile.sh) replace the
+# site-address placeholder line before Caddy starts:
+#   - equal domains     →  {$API_DOMAIN}
+#   - distinct domains  →  {$API_DOMAIN}, {$MCP_DOMAIN}
+#
+# Do NOT list the same host twice — Caddy rejects ambiguous site definitions.
+# Caddy does not merge duplicate site addresses.
+
+__SITE_ADDRESS__ {
+	encode gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	reverse_proxy server:8080
+}
