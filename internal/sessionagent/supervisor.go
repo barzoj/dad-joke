@@ -69,9 +69,10 @@ func (w winsessSource) Sessions(ctx context.Context) ([]Session, error) {
 
 // tracked holds one supervised child and its backoff state.
 type tracked struct {
-	child   Child
-	backoff sessionBackoff
+	child       Child
+	backoff     sessionBackoff
 	watchCancel context.CancelFunc
+	launching   bool // true while Launch runs without s.mu
 }
 
 // Supervisor reconciles one session agent per interactive user session.
@@ -248,6 +249,9 @@ func (s *Supervisor) reconcile(ctx context.Context) {
 			t.backoff.onStableTick(now)
 			continue
 		}
+		if t != nil && t.launching {
+			continue
+		}
 		if t == nil {
 			t = &tracked{}
 			s.children[id] = t
@@ -266,11 +270,34 @@ func (s *Supervisor) reconcile(ctx context.Context) {
 	}
 }
 
+// launchLocked starts a session agent asynchronously. Caller must hold s.mu.
+// Launch runs on a goroutine so service stop is never blocked on
+// CreateProcessAsUser; if stop wins the race the new child is terminated.
 func (s *Supervisor) launchLocked(ctx context.Context, sessionID uint32, t *tracked) {
-	if err := ctx.Err(); err != nil {
+	if s.stopped || t.launching || ctx.Err() != nil {
 		return
 	}
+	t.launching = true
+	go s.finishLaunch(ctx, sessionID, t)
+}
+
+func (s *Supervisor) finishLaunch(ctx context.Context, sessionID uint32, t *tracked) {
 	child, err := s.Launcher.Launch(ctx, sessionID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.launching = false
+
+	if s.stopped {
+		if child != nil {
+			_ = child.Terminate()
+			waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = child.Wait(waitCtx)
+			cancel()
+			_ = child.Close()
+		}
+		return
+	}
 	if err != nil {
 		s.Log.Log("sessionagent: launch session %d: %v", sessionID, err)
 		delay, ok := t.backoff.allowRelaunch(s.Clock.Now())
@@ -280,6 +307,11 @@ func (s *Supervisor) launchLocked(ctx context.Context, sessionID uint32, t *trac
 			s.Log.Log("sessionagent: session %d relaunch cap reached; waiting for next session event", sessionID)
 			t.backoff.capLogged = true
 		}
+		return
+	}
+	if s.children[sessionID] != t {
+		_ = child.Terminate()
+		_ = child.Close()
 		return
 	}
 	t.child = child
@@ -302,7 +334,7 @@ func (s *Supervisor) scheduleRetryLocked(ctx context.Context, sessionID uint32, 
 				return
 			}
 			t := s.children[sessionID]
-			if t == nil || t.child != nil {
+			if t == nil || t.child != nil || t.launching {
 				return
 			}
 			s.launchLocked(ctx, sessionID, t)
@@ -361,7 +393,7 @@ func (s *Supervisor) onChildExit(sessionID uint32, child Child) {
 			return
 		}
 		t := s.children[sessionID]
-		if t == nil || t.child != nil {
+		if t == nil || t.child != nil || t.launching {
 			return
 		}
 		s.launchLocked(context.Background(), sessionID, t)

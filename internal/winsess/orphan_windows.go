@@ -14,7 +14,17 @@ import (
 )
 
 func terminateOrphans(sessionID uint32, exePath string) error {
-	if sessionID == 0 || exePath == "" {
+	return terminateSessionAgents(exePath, sessionID)
+}
+
+func terminateInstalledSessionAgents(installedExe string) error {
+	return terminateSessionAgents(installedExe, 0) // 0 = all interactive sessions
+}
+
+// terminateSessionAgents kills proven session agents for installedExe.
+// If onlySession is non-zero, only that session is considered.
+func terminateSessionAgents(exePath string, onlySession uint32) error {
+	if exePath == "" {
 		return nil
 	}
 	installed := filepath.Clean(exePath)
@@ -27,13 +37,16 @@ func terminateOrphans(sessionID uint32, exePath string) error {
 
 	var snaps []OrphanSnapshot
 	for _, p := range procs {
-		if p.SessionID != sessionID {
+		if p.SessionID == 0 {
+			continue
+		}
+		if onlySession != 0 && p.SessionID != onlySession {
 			continue
 		}
 		if strings.ToLower(p.Exe) != wantBase {
 			continue // basename is only a cheap prefilter
 		}
-		snap, ok := snapshotProcess(p.PID, sessionID)
+		snap, ok := snapshotProcess(p.PID, p.SessionID)
 		if !ok {
 			continue
 		}

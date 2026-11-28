@@ -154,6 +154,11 @@ func (s *Service) Install(ctx context.Context, opts InstallOptions) (InstallOutc
 		if err := s.host.WaitForState(ServiceName, StateStopped, s.stopTimeout); err != nil {
 			return rollback(fmt.Errorf("wait stopped before replace: %w", err))
 		}
+		// Session agents map the installed image; free it before rename/replace.
+		s.host.Log("install: stopping session agents before binary update")
+		if err := s.host.StopSessionAgents(s.paths.BinaryPath); err != nil {
+			return rollback(fmt.Errorf("stop session agents before replace: %w", err))
+		}
 		undos = append(undos, func() error {
 			s.host.Log("install: rollback restarting pre-existing service")
 			if err := s.host.StartService(ServiceName); err != nil {
@@ -309,6 +314,9 @@ func (s *Service) Uninstall(ctx context.Context) error {
 		}
 		if err := s.host.WaitForState(ServiceName, StateStopped, s.stopTimeout); err != nil {
 			s.host.Log("uninstall: wait stopped: %v (continuing)", err)
+		}
+		if err := s.host.StopSessionAgents(s.paths.BinaryPath); err != nil {
+			s.host.Log("uninstall: stop session agents: %v (continuing)", err)
 		}
 		if err := s.host.DeleteService(ServiceName); err != nil {
 			errs = append(errs, fmt.Errorf("delete service: %w", err))

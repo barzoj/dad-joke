@@ -117,6 +117,9 @@ func TestInstallReinstallWhileRunning(t *testing.T) {
 	if h.stopCalls < 1 {
 		t.Fatal("expected StopService before binary replace")
 	}
+	if h.stopSessionAgentsCalls < 1 {
+		t.Fatal("expected StopSessionAgents after service stop before binary replace")
+	}
 	if string(h.files[paths.BinaryPath]) != "binary-v2" {
 		t.Fatalf("binary not replaced: %q", h.files[paths.BinaryPath])
 	}
@@ -287,6 +290,10 @@ func TestUninstallStopsAndRemoves(t *testing.T) {
 	s := NewService(Options{Host: h, Paths: paths, RequireElevated: true, StopTimeout: time.Second})
 	if err := s.Uninstall(context.Background()); err != nil {
 		t.Fatalf("Uninstall: %v", err)
+	}
+	if h.stopSessionAgentsCalls < 1 || h.stopSessionAgentsPath != paths.BinaryPath {
+		t.Fatalf("StopSessionAgents calls=%d path=%q want 1 %q",
+			h.stopSessionAgentsCalls, h.stopSessionAgentsPath, paths.BinaryPath)
 	}
 	if h.services[ServiceName] {
 		t.Fatal("service still registered")
@@ -577,10 +584,12 @@ type mockHost struct {
 	ensureServiceErr      error
 	ensureFirewallErr     error
 	firewallAlwaysReplace bool
-	stopCalls             int
-	trackACLOrder         bool
-	order                 []string
-	logs                  []string
+	stopCalls               int
+	stopSessionAgentsCalls  int
+	stopSessionAgentsPath   string
+	trackACLOrder           bool
+	order                   []string
+	logs                    []string
 }
 
 func newMockHost() *mockHost {
@@ -717,6 +726,13 @@ func (m *mockHost) StopService(name string) error {
 	defer m.mu.Unlock()
 	m.stopCalls++
 	m.serviceState[name] = StateStopped
+	return nil
+}
+func (m *mockHost) StopSessionAgents(binaryPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopSessionAgentsCalls++
+	m.stopSessionAgentsPath = binaryPath
 	return nil
 }
 func (m *mockHost) DeleteService(name string) error {

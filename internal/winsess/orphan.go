@@ -74,6 +74,15 @@ func OrphanReopenMatches(snap OrphanSnapshot, imagePath, cmdLine string, creatio
 	return true
 }
 
+// TerminateInstalledSessionAgents terminates session-agent processes for
+// installedExe across interactive sessions. Used after service stop so
+// reinstall/upgrade can replace the binary (session agents map the image).
+// Platform stub elsewhere; Windows uses the same path/cmdline/creation-time
+// guards as orphan re-adopt.
+func TerminateInstalledSessionAgents(installedExe string) error {
+	return terminateInstalledSessionAgents(installedExe)
+}
+
 func splitCmdTokens(cmdLine string) []string {
 	cmdLine = strings.TrimSpace(cmdLine)
 	if cmdLine == "" {

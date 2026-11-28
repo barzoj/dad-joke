@@ -630,6 +630,62 @@ func TestProcessIdentityIgnoresStalePID(t *testing.T) {
 	cancel()
 }
 
+func TestStopAbortsInFlightLaunch(t *testing.T) {
+	t.Parallel()
+	events := make(chan service.Event, 2)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var termCount atomic.Int32
+	launch := newFakeLauncher(1)
+	launch.launchFn = func(sessionID uint32) (Child, error) {
+		close(entered)
+		<-release
+		ch := newFakeChild(4242)
+		// Count Terminate so we know the post-stop child was reaped.
+		return &countingTermChild{fakeChild: ch, n: &termCount}, nil
+	}
+	src := &fixedSessions{list: []Session{{ID: 1, UserName: "a"}}}
+	s := &Supervisor{
+		Events: events, Sessions: src, Launcher: launch, Sink: &recordingSink{},
+		Clock: newMemClock(time.Now()), Log: NopLogger{}, StopBudget: 500 * time.Millisecond,
+	}
+	cancel, errCh := startSup(t, s)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Launch never started")
+	}
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop blocked on in-flight Launch")
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for termCount.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if termCount.Load() == 0 {
+		t.Fatal("late Launch child was not terminated after stop")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.children) != 0 {
+		t.Fatalf("children left after stop: %d", len(s.children))
+	}
+}
+
+type countingTermChild struct {
+	*fakeChild
+	n *atomic.Int32
+}
+
+func (c *countingTermChild) Terminate() error {
+	c.n.Add(1)
+	return c.fakeChild.Terminate()
+}
+
 func TestStopDuringBackoff(t *testing.T) {
 	t.Parallel()
 	events := make(chan service.Event, 2)

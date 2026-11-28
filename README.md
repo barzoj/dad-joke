@@ -313,6 +313,7 @@ The running service polls GitHub Releases (default `poll_interval_seconds=60`), 
 
 Running `install` again is idempotent:
 
+- Stops the `DadJoke` service and any remaining interactive session agents (`dad-joke.exe session`) before replacing the binary, then restarts the service.
 - `machine_id` is **never** replaced once present.
 - `token` is preserved unless you pass `--token` (then the new value is stored verbatim).
 - `--backend-url` / `--heartbeat-interval` alone update those fields only; they do **not** rotate the token.
@@ -323,7 +324,7 @@ Running `install` again is idempotent:
 & 'C:\Program Files\DadJoke\dad-joke.exe' uninstall
 ```
 
-Removes the `DadJoke` service, firewall rule, `C:\Program Files\DadJoke`, and `C:\ProgramData\DadJoke` (including `config.json`). Requires Administrator. Safe to run when nothing is installed.
+Stops the service and session agents, then removes the `DadJoke` service, firewall rule, `C:\Program Files\DadJoke`, and `C:\ProgramData\DadJoke` (including `config.json`). Requires Administrator. Safe to run when nothing is installed.
 
 ## Troubleshooting
 

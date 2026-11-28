@@ -174,6 +174,7 @@ Lifecycle (level-triggered reconcile — desired state = exactly one session age
 | Unexpected child exit (user kill/crash) | Relaunch after backoff 1 s, 2 s, 4 s … capped 60 s (reset after 5 min stable); max 10 relaunches / 10 min / session then wait for the next session event; enqueue `session.restarted` `{session_id}` (`dur_s=0`) once per relaunch. Relaunch **cap clears** only on logon / console-or-remote connect / power-resume — **not** on lock/unlock/disconnect |
 | Sleep/resume (`PBT_APMRESUMEAUTOMATIC`) | Clear relaunch caps, reconcile (relaunch if died); sampler previous-sample state is reset |
 | Service stop | Terminate all children on owned handles; reach `Stopped` within the SCM stop budget even if a child ignores termination |
+| Install / uninstall (after service `Stopped`) | Terminate any remaining interactive session agents for the installed image (path + `session` cmdline + creation-time guards) so the binary can be replaced or deleted |
 
 SCM session/power notifications are accepted (`AcceptSessionChange` / `AcceptPowerEvent`) and forwarded on a non-blocking `service.Events` channel to the supervisor. Nobody logged on / login-screen-only → nothing is launched and no error spam.
 
