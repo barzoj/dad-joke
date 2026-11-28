@@ -364,6 +364,8 @@ make cover      # race + coverage floor (needs CGO; set DAD_JOKE_MONGODB_URI for
 
 Agent and review guidance: [`AGENTS.md`](AGENTS.md). Canonical architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+Native policy spike (T-24): `go test -tags=spike ./e2e/policy-spike/...` on Windows (CI workflow [`.github/workflows/policy-spike.yml`](.github/workflows/policy-spike.yml)); findings in [`docs/policy-spike-findings.md`](docs/policy-spike-findings.md).
+
 Contributions: open a PR against `main`. Any change that affects user-visible behaviour, install/upgrade steps, config keys, env vars, CLI flags, release artifacts, or an HTTP/MCP API **must** update this README (and `docs/` when design changes) in the same PR.
 
 Docs gate (links, install flags, env vars, Mermaid):
