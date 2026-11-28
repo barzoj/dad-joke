@@ -161,8 +161,24 @@ Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + st
 
 | Process | How it starts | Session / identity | Privileges & I/O |
 | --- | --- | --- | --- |
-| **Service** (`dad-joke.exe run`) | SCM (`DadJoke` service) | Session 0, `LocalSystem` | Network, secrets (`config.json`), durable facts queue, policy/job loops, **supervises** session agents |
-| **Session agent** (`dad-joke.exe session`) | Service via `WTSQueryUserToken` + `CreateProcessAsUser` into the user's session (`CREATE_NO_WINDOW`, user environment block) | Interactive session (never Session 0), runs as that user | GUI-capable process; **no** agent token, backend URL, network, or `config.json` / ProgramData access |
+| **Service** (`dad-joke.exe run`) | SCM (`DadJoke` service) | Session 0, `LocalSystem` | Network, secrets (`config.json`), durable facts queue, policy/job loops, **supervises** session agents, **IPC server** |
+| **Session agent** (`dad-joke.exe session`) | Service via `WTSQueryUserToken` + `CreateProcessAsUser` into the user's session (`CREATE_NO_WINDOW`, user environment block) | Interactive session (never Session 0), runs as that user | GUI-capable process; **no** agent token, backend URL, network, or `config.json` / ProgramData access; **IPC client** only |
+
+### Session IPC (`internal/ipc`, ProtocolVersion = 1)
+
+Versioned, access-controlled channel between the service and each session agent. No business payloads yet (foreground sampling is separate).
+
+| Concern | Behaviour |
+| --- | --- |
+| **Transport** | Named pipe `\\.\pipe\DadJoke.session.<sessionID>` per interactive session |
+| **Framing** | 4-byte big-endian length + UTF-8 JSON; max frame **64 KiB**; oversize/truncated/garbage closes the connection without allocating the declared size |
+| **Messages** | `hello` / `hello_ack` / `reject` / `ping` / `pong`, plus extension envelope `msg{msg_type,payload}` |
+| **Versioning** | Exact match on `ProtocolVersion` **1**; mismatch → `reject{code:"version_mismatch"}`, not connected; no negotiation |
+| **Pipe ACL** | DACL allows `SYSTEM` and the **session user SID** only (from the token queried for launch). No Administrators / Everyone / Authenticated Users. `FILE_FLAG_FIRST_PIPE_INSTANCE` + `PIPE_REJECT_REMOTE_CLIENTS` |
+| **Client verification** | After `ConnectNamedPipe`: `GetNamedPipeClientProcessId` + `GetNamedPipeClientSessionId` must equal the child the supervisor launched; otherwise close without reading frames |
+| **Handshake** | `hello` within 5 s; service replies `hello_ack` with `interval_seconds` (sample interval) and `server_time`. No secrets cross the pipe |
+| **Reconnect** | Session agent reconnects with backoff 250 ms → 5 s on drop; disconnect does **not** restart the process; supervisor exposes `Connected(sessionID)` |
+| **Fail closed** | Framing/handshake errors close the connection; unknown `type` is ignored and counted; supervisor relaunch logic is unaffected |
 
 Lifecycle (level-triggered reconcile — desired state = exactly one session agent per interactive session with a user token):
 
@@ -189,7 +205,7 @@ SCM session/power notifications are accepted (`AcceptSessionChange` / `AcceptPow
 | **Job worker** | `internal/jobs` | Sequential consumer of handed-off job ids. For each id: `POST /v1/jobs/{id}/claim` (skip cleanly on `409`/`404`); Zero-Trust validation (only contract types `powershell` / `cmd`; payload ≤ 64 KiB) before spawn; create the process with `CREATE_SUSPENDED` + `CREATE_NO_WINDOW` (Session 0–safe; no console alloc), `AssignProcessToJobObject` on `pi.Process`, then `ResumeThread` so membership is established before any instruction (and before grandchildren) can run; stdio inheritance is restricted with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` (NUL + stdout/stderr write ends only); powershell argv includes `-InputFormat None` so redirected stdin cannot block after `-Command`; Job Object uses `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (plus `TerminateJobObject` on timeout) with a bounded pipe-drain wait so result POST cannot hang; hard timeout default **60s**, max **300s** (clamped); bounded stdout/stderr capture capped at **64 KiB** with UTF-8-safe truncation; `POST /v1/jobs/{id}/result` (`succeeded` / `failed` / `timed_out`) and best-effort `POST /v1/events` (`job.result`); append a local JSONL audit line under `C:\ProgramData\DadJoke\jobs-audit.jsonl` with strict `SYSTEM` + `Administrators` ACL (`internal/acl`), scrubbing the agent token. Never logs the raw agent token. |
 | **Sampler** | `internal/sampler` (+ `internal/sensor`, `internal/sensor/sessions`, `internal/winsess`) | Every `sample_interval_seconds` collects interactive-session facts via WTS (`session.state` with `active`/`locked`/`disconnected`, `proc.sample` basenames for that SID excluding SYSTEM/LocalService/NetworkService, deduped/sorted, capped at 200). `dur_s` is elapsed since the previous successful sample clamped to `[1, min(2×interval, 300)]` (contract `FactDurMaxSeconds`); a wall-clock jump `> 2×interval` (sleep heuristic) or `Sampler.Reset()` (on power resume) drops the previous timestamp. A tick with **zero** facts does **not** enqueue (no empty keepalive — heartbeat carries zone); when facts are present, batches are written to the durable facts queue even if `backend_url` is empty. |
 | **Facts uploader** | `internal/factsup` (+ `internal/factsq`) | FIFO upload of immutable batch files from `C:\ProgramData\DadJoke\facts\` to `POST /v1/facts` (one batch in flight). `200` (incl. `duplicate:true`) deletes the batch; `400`/`413` move it to `rejected\`; `401`/`403` retain and back off (token redacted in logs); `5xx`/network retry the same bytes. Exponential backoff with jitter (cap 5 min); honours `Retry-After` on `429`. Empty `backend_url` → idle with no error noise. Honours context cancel so SCM stop stays within budget. |
-| **Session supervisor** | `internal/sessionagent` (+ `internal/winsess` launch) | Ensures exactly one `dad-joke.exe session` per interactive user session; see [Two-process Windows agent](#two-process-windows-agent). Enqueues `session.restarted` markers into the shared facts queue on unexpected child exit + relaunch. |
+| **Session supervisor** | `internal/sessionagent` (+ `internal/winsess` launch, `internal/ipc`) | Ensures exactly one `dad-joke.exe session` per interactive user session; hosts the per-session IPC server (see [Session IPC](#session-ipc-internalipc-protocolversion--1)); enqueues `session.restarted` markers into the shared facts queue on unexpected child exit + relaunch. |
 
 ### Facts queue (`C:\ProgramData\DadJoke\facts\`)
 
@@ -218,7 +234,7 @@ Job contract fields used by the agent (from `api/common/jobs.tsp`): `type` (`pow
 Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI:
 
 - API generate + race test/vet (live MongoDB DAL)
-- Windows test/build + native `windows-latest` E2E (`-tags=e2e`: install/ACL, update, heartbeat, jobs Job Object timeout/truncation, **Restart-Service** config+token persistence, session-agent launch/kill/restart/stop when an interactive session is available)
+- Windows test/build + native `windows-latest` E2E (`-tags=e2e`: install/ACL, update, heartbeat, jobs Job Object timeout/truncation, **Restart-Service** config+token persistence, session-agent launch/kill/restart/stop + IPC handshake/ACL/spoof/reconnect when an interactive session is available)
 - Linux full-stack E2E (`e2e/linux`, `-tags=e2e`: register → PAT/`dj_agt_` → heartbeat → MCP `list_machines`/`set_policy`/`run_script`/`get_job`/`list_events` → cross-tenant isolation → revocation `401` → fail-closed MongoDB)
 - Compose image smoke (non-root, read-only rootfs, `/healthz`) + `scripts/smoke-e2e.sh`
 - No-leak gate over public deploy/scripts/docs/workflows

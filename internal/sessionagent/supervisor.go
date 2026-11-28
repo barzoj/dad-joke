@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/installer"
+	"github.com/barzoj/dad-joke/internal/ipc"
 	"github.com/barzoj/dad-joke/internal/service"
 	"github.com/barzoj/dad-joke/internal/winsess"
 )
@@ -62,7 +64,7 @@ func (w winsessSource) Sessions(ctx context.Context) ([]Session, error) {
 		if s.UserName == "" && s.UserSID == "" {
 			continue
 		}
-		out = append(out, Session{ID: s.ID, UserName: s.UserName})
+		out = append(out, Session{ID: s.ID, UserName: s.UserName, UserSID: s.UserSID})
 	}
 	return out, nil
 }
@@ -74,6 +76,9 @@ type tracked struct {
 	watchCancel context.CancelFunc
 	launching   bool          // true while finishLaunch runs
 	launchDone  chan struct{} // closed when finishLaunch returns
+	ipcServer   *ipc.SessionServer
+	ipcCancel   context.CancelFunc
+	userSID     string
 }
 
 // Supervisor reconciles one session agent per interactive user session.
@@ -88,6 +93,14 @@ type Supervisor struct {
 	OnPowerResume func()
 	// StopBudget bounds terminate waits on service stop (default 40s).
 	StopBudget time.Duration
+	// IntervalSeconds is sent in hello_ack (sample interval). Default 60.
+	IntervalSeconds int
+	// IPCListen overrides the named-pipe listener (tests use MemHub).
+	IPCListen ipc.ListenFunc
+	// IPCHandler receives post-handshake messages (default NopHandler).
+	IPCHandler ipc.Handler
+	// IPCStats is shared IPC counters (tests / diagnostics).
+	IPCStats *ipc.Stats
 
 	mu       sync.Mutex
 	children map[uint32]*tracked
@@ -98,16 +111,52 @@ type Supervisor struct {
 // New returns a production supervisor wired to winsess and the installed binary.
 func New(events <-chan service.Event, sink RestartSink) *Supervisor {
 	paths := installer.DefaultPaths()
-	return &Supervisor{
-		Events:     events,
-		Sessions:   winsessSource{src: winsess.Default()},
-		Launcher:   winsess.DefaultLauncher(paths.BinaryPath),
-		Sink:       sink,
-		Clock:      RealClock{},
-		Log:        WriterLogger{W: os.Stderr},
-		StopBudget: 40 * time.Second,
-		children:   make(map[uint32]*tracked),
+	interval := config.DefaultSampleIntervalSeconds
+	if cfg, err := config.LoadFile(paths.ConfigPath); err == nil {
+		interval = cfg.SampleIntervalSeconds
 	}
+	return &Supervisor{
+		Events:          events,
+		Sessions:        winsessSource{src: winsess.Default()},
+		Launcher:        winsess.DefaultLauncher(paths.BinaryPath),
+		Sink:            sink,
+		Clock:           RealClock{},
+		Log:             WriterLogger{W: os.Stderr},
+		StopBudget:      40 * time.Second,
+		IntervalSeconds: interval,
+		IPCStats:        &ipc.Stats{},
+		children:        make(map[uint32]*tracked),
+	}
+}
+
+// Connected reports whether sessionID has a post-handshake IPC connection.
+func (s *Supervisor) Connected(sessionID uint32) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.children[sessionID]
+	if t == nil || t.ipcServer == nil {
+		return false
+	}
+	return t.ipcServer.Connected()
+}
+
+// DropIPC closes the active IPC connection for sessionID without killing the child.
+func (s *Supervisor) DropIPC(sessionID uint32) {
+	s.mu.Lock()
+	t := s.children[sessionID]
+	var srv *ipc.SessionServer
+	if t != nil {
+		srv = t.ipcServer
+	}
+	s.mu.Unlock()
+	if srv != nil {
+		srv.Drop()
+	}
+}
+
+// Stats returns IPC counters (may be nil before Run).
+func (s *Supervisor) Stats() *ipc.Stats {
+	return s.IPCStats
 }
 
 // Run implements service.Agent.
@@ -133,10 +182,20 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if s.StopBudget <= 0 {
 		s.StopBudget = 40 * time.Second
 	}
+	if s.IntervalSeconds <= 0 {
+		s.IntervalSeconds = config.DefaultSampleIntervalSeconds
+	}
+	if s.IPCStats == nil {
+		s.IPCStats = &ipc.Stats{}
+	}
+	if s.IPCHandler == nil {
+		s.IPCHandler = ipc.NopHandler{}
+	}
 	s.runCtx = ctx
 
 	s.Log.Log("sessionagent: supervisor starting")
 	s.reconcile(ctx)
+	go s.runDiagLoop(ctx)
 
 	events := s.Events
 	for {
@@ -246,10 +305,11 @@ func (s *Supervisor) reconcile(ctx context.Context) {
 	}
 
 	now := s.Clock.Now()
-	for id := range desired {
+	for id, sess := range desired {
 		t := s.children[id]
 		if t != nil && t.child != nil {
 			t.backoff.onStableTick(now)
+			s.ensureIPCLocked(ctx, id, t, sess)
 			continue
 		}
 		if t != nil && t.launching {
@@ -269,8 +329,60 @@ func (s *Supervisor) reconcile(ctx context.Context) {
 		if !t.backoff.pendingUntil.IsZero() && now.Before(t.backoff.pendingUntil) {
 			continue
 		}
+		s.ensureIPCLocked(ctx, id, t, sess)
 		s.launchLocked(ctx, id, t)
 	}
+}
+
+// ensureIPCLocked starts the per-session IPC server if needed. Caller holds s.mu.
+func (s *Supervisor) ensureIPCLocked(ctx context.Context, sessionID uint32, t *tracked, sess Session) {
+	if t.ipcServer != nil {
+		return
+	}
+	sid := sess.UserSID
+	if sid == "" {
+		sid = lookupSessionUserSID(sessionID)
+	}
+	if sid == "" {
+		s.Log.Log("sessionagent: session %d: no user SID for IPC pipe ACL", sessionID)
+		return
+	}
+	t.userSID = sid
+	srv := &ipc.SessionServer{
+		SessionID:       sessionID,
+		UserSID:         sid,
+		IntervalSeconds: s.IntervalSeconds,
+		Handler:         s.IPCHandler,
+		Listen:          s.IPCListen,
+		Log:             s.Log.Log,
+		Stats:           s.IPCStats,
+	}
+	if t.child != nil {
+		srv.ExpectedPID = t.child.PID()
+	}
+	ipcCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	t.ipcServer = srv
+	t.ipcCancel = cancel
+	go func() {
+		_ = srv.Run(ipcCtx)
+	}()
+}
+
+func lookupSessionUserSID(sessionID uint32) string {
+	tok, err := winsess.QueryUserToken(sessionID)
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		if tok != 0 {
+			_ = closeToken(tok)
+		}
+	}()
+	sid, err := winsess.TokenUserSIDString(tok)
+	if err != nil {
+		return ""
+	}
+	return sid
 }
 
 // launchLocked starts a session agent asynchronously. Caller must hold s.mu.
@@ -324,6 +436,9 @@ func (s *Supervisor) finishLaunch(ctx context.Context, sessionID uint32, t *trac
 	}
 	t.child = child
 	t.backoff.onLaunched(s.Clock.Now())
+	if t.ipcServer != nil {
+		t.ipcServer.SetExpectedPID(child.PID())
+	}
 	watchCtx, cancel := context.WithCancel(detach)
 	t.watchCancel = cancel
 	go s.watchChild(watchCtx, sessionID, child)
@@ -382,6 +497,10 @@ func (s *Supervisor) onChildExit(sessionID uint32, child Child) {
 	}
 	emitRestart := t.backoff.expectRestart
 	t.child = nil
+	if t.ipcServer != nil {
+		t.ipcServer.SetExpectedPID(0)
+		t.ipcServer.Drop() // close any connection from the dead child
+	}
 	if t.watchCancel != nil {
 		t.watchCancel()
 		t.watchCancel = nil
@@ -444,6 +563,11 @@ func (s *Supervisor) stopTrackedLocked(sessionID uint32, t *tracked) {
 		t.watchCancel()
 		t.watchCancel = nil
 	}
+	if t.ipcCancel != nil {
+		t.ipcCancel()
+		t.ipcCancel = nil
+		t.ipcServer = nil
+	}
 	if t.child != nil {
 		detach := context.Background()
 		if s.runCtx != nil {
@@ -466,6 +590,11 @@ func (s *Supervisor) shutdown(parent context.Context) {
 	snaps := make([]snap, 0, len(s.children))
 	for id, t := range s.children {
 		t.backoff.expectRestart = false
+		if t.ipcCancel != nil {
+			t.ipcCancel()
+			t.ipcCancel = nil
+			t.ipcServer = nil
+		}
 		snaps = append(snaps, snap{t: t, done: t.launchDone})
 		delete(s.children, id)
 	}
