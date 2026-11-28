@@ -17,6 +17,6 @@ func main() {
 		Version:   buildinfo.Version,
 		Commit:    buildinfo.Commit,
 		Installer: installer.New(),
-		Runner:    service.NewRunner(service.Options{Agent: cli.DefaultAgentGroup()}),
+		Runner:    service.NewRunner(cli.DefaultServiceOptions()),
 	}))
 }

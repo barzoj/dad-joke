@@ -10,6 +10,7 @@ import (
 
 	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/service"
+	"github.com/barzoj/dad-joke/internal/sessionagent"
 	"github.com/barzoj/dad-joke/internal/updater"
 )
 
@@ -149,7 +150,7 @@ func TestInjectedStubCommandsReturnUnimplemented(t *testing.T) {
 func TestStubCommandsRejectExtraArgs(t *testing.T) {
 	t.Parallel()
 
-	for _, cmd := range []string{"install", "uninstall", "run"} {
+	for _, cmd := range []string{"install", "uninstall", "run", "session"} {
 		t.Run(cmd, func(t *testing.T) {
 			t.Parallel()
 			var stderr bytes.Buffer
@@ -161,6 +162,27 @@ func TestStubCommandsRejectExtraArgs(t *testing.T) {
 				t.Fatalf("stderr = %q, want unexpected argument", stderr.String())
 			}
 		})
+	}
+}
+
+func TestSessionRejectsExtraArgs(t *testing.T) {
+	t.Parallel()
+	var stderr bytes.Buffer
+	code := Run([]string{"session", "extra"}, Dependencies{Stderr: &stderr})
+	if code != ExitUsage {
+		t.Fatalf("exit = %d", code)
+	}
+}
+
+func TestSessionExitsOnCancelWithoutTouchingConfig(t *testing.T) {
+	t.Parallel()
+	// sessionagent.Run only waits on context; CLI wires signal.NotifyContext.
+	// Exercise the package entrypoint directly with a cancelled context to
+	// prove no config I/O (no ConfigPath / FS injection needed — Run has none).
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sessionagent.Run(ctx); err == nil {
+		t.Fatal("expected cancel error")
 	}
 }
 

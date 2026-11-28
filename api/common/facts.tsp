@@ -28,7 +28,8 @@ using TypeSpec.Http;
  * - `proc.sample`: `exes` (may be empty)
  * - `fg.sample`: `exe`, `pid`, `title`, `idle_s`; optional `path`
  * - `queue.dropped`: `dropped_batches`, `dropped_bytes`
- * - `session.restarted`: optional markers only (no required data members)
+ * - `session.restarted`: optional markers only (no required data members);
+ *   supervisors typically include `session_id` when known
  *
  * ControlAPI usage (`GET /v1/machines/{machine_id}/usage?date=`):
  * - `date` is a required calendar day (`YYYY-MM-DD`); there is no `tz`

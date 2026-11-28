@@ -6,6 +6,7 @@
 //	install                 install Windows Service (Issue #2)
 //	uninstall               uninstall Windows Service (Issue #2)
 //	run                     Windows Service entrypoint (Issues #2/#3)
+//	session                 per-user session agent (T-21; launched by the service)
 //	apply-update            detached helper: replace binary, restart, health, rollback (Issue #3)
 //
 // Exit codes:
@@ -17,11 +18,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/barzoj/dad-joke/internal/buildinfo"
@@ -33,6 +38,7 @@ import (
 	"github.com/barzoj/dad-joke/internal/jobs"
 	"github.com/barzoj/dad-joke/internal/sampler"
 	"github.com/barzoj/dad-joke/internal/service"
+	"github.com/barzoj/dad-joke/internal/sessionagent"
 	"github.com/barzoj/dad-joke/internal/updater"
 )
 
@@ -60,20 +66,40 @@ type UpdateApplier interface {
 	Apply(ctx context.Context, opts updater.ApplyOptions) error
 }
 
-// DefaultAgentGroup returns the production service.Agent set: updater,
-// heartbeat, jobs, facts sampler, and facts uploader. Sampler and uploader
-// share one durable factsq under ProgramData\DadJoke\facts.
-func DefaultAgentGroup() service.Group {
+// DefaultServiceOptions wires the production Windows Service: SCM event
+// channel, updater, heartbeat, jobs, sampler, facts uploader, and session-agent
+// supervisor. Sampler and uploader share one durable factsq under
+// ProgramData\DadJoke\facts.
+func DefaultServiceOptions() service.Options {
+	events := make(chan service.Event, 64)
 	handoff := jobs.NewHandoff()
 	paths := installer.DefaultPaths()
 	factsQ := &factsq.Queue{Dir: filepath.Join(paths.DataDir, "facts")}
-	return service.Group{
-		updater.NewPoller(),
-		heartbeat.New(handoff),
-		jobs.New(handoff),
-		sampler.New(factsQ),
-		factsup.New(factsQ),
+	samp := sampler.New(factsQ)
+	sup := sessionagent.New(events, sessionagent.NewQueueSink())
+	sup.OnPowerResume = samp.Reset
+	return service.Options{
+		Agent: service.Group{
+			updater.NewPoller(),
+			heartbeat.New(handoff),
+			jobs.New(handoff),
+			samp,
+			factsup.New(factsQ),
+			sup,
+		},
+		Events: events,
 	}
+}
+
+// DefaultAgentGroup returns the production service.Agent set (see
+// DefaultServiceOptions). Prefer DefaultServiceOptions when constructing a
+// Runner so SCM session/power events reach the supervisor.
+func DefaultAgentGroup() service.Group {
+	opts := DefaultServiceOptions()
+	if g, ok := opts.Agent.(service.Group); ok {
+		return g
+	}
+	return service.Group{opts.Agent}
 }
 
 // usageText is the canonical help / usage string.
@@ -85,6 +111,7 @@ Commands:
                           [--token SECRET] [--backend-url URL] [--heartbeat-interval SECONDS] [--sample-interval SECONDS]
   uninstall               Uninstall the DadJoke Windows Service (Administrator required)
   run                     Run as the DadJoke Windows Service
+  session                 Run as the per-user session agent (launched by the service)
   apply-update            Apply a verified staged binary (internal helper)
 
 Pass --help or -h for this message.
@@ -102,7 +129,7 @@ func Run(args []string, deps Dependencies) int {
 		deps.Installer = installer.New()
 	}
 	if deps.Runner == nil {
-		deps.Runner = service.NewRunner(service.Options{Agent: DefaultAgentGroup()})
+		deps.Runner = service.NewRunner(DefaultServiceOptions())
 	}
 	if deps.Applier == nil {
 		deps.Applier = &updater.Applier{
@@ -134,6 +161,8 @@ func Run(args []string, deps Dependencies) int {
 		return runUninstall(rest, deps)
 	case "run":
 		return runRun(rest, deps)
+	case "session":
+		return runSession(rest, deps)
 	case "apply-update":
 		return runApplyUpdate(rest, deps)
 	default:
@@ -257,6 +286,18 @@ func runRun(args []string, deps Dependencies) int {
 		return usage(deps.Stderr, err.Error())
 	}
 	if err := deps.Runner.Run(context.Background()); err != nil {
+		return writeError(deps.Stderr, err)
+	}
+	return ExitOK
+}
+
+func runSession(args []string, deps Dependencies) int {
+	if err := rejectExtra(args); err != nil {
+		return usage(deps.Stderr, err.Error())
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := sessionagent.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return writeError(deps.Stderr, err)
 	}
 	return ExitOK

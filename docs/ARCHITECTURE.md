@@ -6,9 +6,9 @@ This document defines the enduring architectural invariants of **Dad Joke**: a W
 
 - **Target OS:** Windows Home, compatible with Pro and Enterprise.
 - **Child session:** runs as a **Standard User**.
-- **Agent:** runs as a **Windows Service** under `LocalSystem`.
-- **Hardening:** agent binaries and configuration are protected by strict Windows ACLs—`SYSTEM` and `Administrators` only.
-- **Persistent identity & AgentAPI settings:** `C:\ProgramData\DadJoke\config.json` holds a stable `machine_id` (RFC 4122 UUIDv4) and a secret `token` (auto-generated as 256-bit `crypto/rand` → 64-char lowercase hex, or an explicit install `--token` stored verbatim). Optional `backend_url` (AgentAPI base URL; empty = local-only, no heartbeat/upload), `heartbeat_interval_seconds` (default `60`), and `sample_interval_seconds` (default `60`, valid `15..300`) are set via `dad-joke.exe install --backend-url` / `--heartbeat-interval` / `--sample-interval`. Identity and backend settings are created on first install and preserved across reinstalls/self-updates (unless the matching flag replaces them). Loaded at service startup. The raw `token` must never appear in service logs or outbound updater / GitHub Releases HTTP.
+- **Agent (two processes, one binary):** the same `dad-joke.exe` runs as (1) a **Windows Service** under `LocalSystem` in Session 0, and (2) a **session agent** (`dad-joke.exe session`) inside each interactive user session. See [Two-process Windows agent](#two-process-windows-agent).
+- **Hardening:** agent binaries and configuration are protected by strict Windows ACLs—`SYSTEM` and `Administrators` only. The session agent runs as the logged-on user and therefore cannot read those secrets.
+- **Persistent identity & AgentAPI settings:** `C:\ProgramData\DadJoke\config.json` holds a stable `machine_id` (RFC 4122 UUIDv4) and a secret `token` (auto-generated as 256-bit `crypto/rand` → 64-char lowercase hex, or an explicit install `--token` stored verbatim). Optional `backend_url` (AgentAPI base URL; empty = local-only, no heartbeat/upload), `heartbeat_interval_seconds` (default `60`), and `sample_interval_seconds` (default `60`, valid `15..300`) are set via `dad-joke.exe install --backend-url` / `--heartbeat-interval` / `--sample-interval`. Identity and backend settings are created on first install and preserved across reinstalls/self-updates (unless the matching flag replaces them). Loaded at **service** startup only. The raw `token` must never appear in service logs or outbound updater / GitHub Releases HTTP. The session agent never receives the token, backend URL, or `DAD_JOKE_*` secrets on its command line or environment and does not open `config.json`.
 
 ## Strict Two-Layer Separation
 
@@ -157,17 +157,38 @@ Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + st
 | **Ops scripts** | `scripts/backup-mongo.sh` (`mongodump --archive --gzip` + retention); `scripts/smoke-e2e.sh` (healthz → signup → PAT/agent token → heartbeat → MCP `tools/list` / `list_machines`); `scripts/no-leak-check.sh` (CI sterility gate). |
 | **CI / release** | Trivy `HIGH`/`CRITICAL` image scan; Compose smoke runs `smoke-e2e.sh` end-to-end; Caddyfile validated (`caddy adapt --validate`) for both equal and distinct domains; `v*` tags publish Windows `.exe`+`.sha256` and multi-arch GHCR images by pushing an immutable `sha-<commit>` candidate, smoke-testing that exact digest on `amd64`+`arm64`, then promoting the same digest to `v0.0.x` and `latest`. |
 
+## Two-process Windows agent
+
+| Process | How it starts | Session / identity | Privileges & I/O |
+| --- | --- | --- | --- |
+| **Service** (`dad-joke.exe run`) | SCM (`DadJoke` service) | Session 0, `LocalSystem` | Network, secrets (`config.json`), durable facts queue, policy/job loops, **supervises** session agents |
+| **Session agent** (`dad-joke.exe session`) | Service via `WTSQueryUserToken` + `CreateProcessAsUser` into the user's session (`CREATE_NO_WINDOW`, user environment block) | Interactive session (never Session 0), runs as that user | GUI-capable process; **no** agent token, backend URL, network, or `config.json` / ProgramData access |
+
+Lifecycle (level-triggered reconcile — desired state = exactly one session agent per interactive session with a user token):
+
+| Event | Behaviour |
+| --- | --- |
+| Service start / `Restart-Service` | Enumerate interactive sessions; terminate orphans from a prior instance; launch one agent per session with a user token |
+| Logon / unlock / connect | Reconcile → ensure one agent in that session |
+| Logoff / disconnect without user | Terminate the child via the **process handle the service created** (never a remembered PID) |
+| Unexpected child exit (user kill/crash) | Relaunch after backoff 1 s, 2 s, 4 s … capped 60 s (reset after 5 min stable); max 10 relaunches / 10 min / session then wait for the next session event; enqueue `session.restarted` `{session_id}` (`dur_s=0`) once per relaunch |
+| Sleep/resume (`PBT_APMRESUMEAUTOMATIC`) | Reconcile (relaunch if died); sampler previous-sample state is reset |
+| Service stop | Terminate all children on owned handles; reach `Stopped` within the SCM stop budget even if a child ignores termination |
+
+SCM session/power notifications are accepted (`AcceptSessionChange` / `AcceptPowerEvent`) and forwarded on a non-blocking `service.Events` channel to the supervisor. Nobody logged on / login-screen-only → nothing is launched and no error spam.
+
 ## Windows agent runtime (current)
 
-`dad-joke.exe run` (Windows Service under `LocalSystem`) runs five independent background loops via `service.Group`:
+`dad-joke.exe run` (Windows Service under `LocalSystem`) runs six independent background loops via `service.Group`:
 
 | Loop | Package | Behavior |
 | --- | --- | --- |
 | **Auto-update** | `internal/updater` | Polls `release_api_url` on `poll_interval_seconds`; SHA-256–verified apply. Never sends `Authorization` / `token`. |
 | **Heartbeat** | `internal/heartbeat` | When `backend_url` is non-empty, posts `POST /v1/heartbeat` via the generated `gen/go/agentapi` client with `Authorization: Bearer <token>`, `machine_id`, compile-time `Version`, hostname, OS version, `applied_policy_version` (`0` until policy apply exists), and the machine's current IANA `time_zone` / `utc_offset_minutes` (`internal/tzmap`: Windows id → CLDR IANA table, with `Etc/GMT±H` / `UTC` fallback). First beat promptly on start, then every `heartbeat_interval_seconds`. On success, `pending_job_ids` are handed off asynchronously (non-blocking) to the job worker. |
 | **Job worker** | `internal/jobs` | Sequential consumer of handed-off job ids. For each id: `POST /v1/jobs/{id}/claim` (skip cleanly on `409`/`404`); Zero-Trust validation (only contract types `powershell` / `cmd`; payload ≤ 64 KiB) before spawn; create the process with `CREATE_SUSPENDED` + `CREATE_NO_WINDOW` (Session 0–safe; no console alloc), `AssignProcessToJobObject` on `pi.Process`, then `ResumeThread` so membership is established before any instruction (and before grandchildren) can run; stdio inheritance is restricted with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` (NUL + stdout/stderr write ends only); powershell argv includes `-InputFormat None` so redirected stdin cannot block after `-Command`; Job Object uses `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (plus `TerminateJobObject` on timeout) with a bounded pipe-drain wait so result POST cannot hang; hard timeout default **60s**, max **300s** (clamped); bounded stdout/stderr capture capped at **64 KiB** with UTF-8-safe truncation; `POST /v1/jobs/{id}/result` (`succeeded` / `failed` / `timed_out`) and best-effort `POST /v1/events` (`job.result`); append a local JSONL audit line under `C:\ProgramData\DadJoke\jobs-audit.jsonl` with strict `SYSTEM` + `Administrators` ACL (`internal/acl`), scrubbing the agent token. Never logs the raw agent token. |
-| **Sampler** | `internal/sampler` (+ `internal/sensor`, `internal/sensor/sessions`, `internal/winsess`) | Every `sample_interval_seconds` collects interactive-session facts via WTS (`session.state` with `active`/`locked`/`disconnected`, `proc.sample` basenames for that SID excluding SYSTEM/LocalService/NetworkService, deduped/sorted, capped at 200). `dur_s` is elapsed since the previous successful sample clamped to `[1, min(2×interval, 300)]` (contract `FactDurMaxSeconds`); a wall-clock jump `> 2×interval` (sleep heuristic) or `Sampler.Reset()` drops the previous timestamp. A tick with **zero** facts does **not** enqueue (no empty keepalive — heartbeat carries zone); when facts are present, batches are written to the durable facts queue even if `backend_url` is empty. |
+| **Sampler** | `internal/sampler` (+ `internal/sensor`, `internal/sensor/sessions`, `internal/winsess`) | Every `sample_interval_seconds` collects interactive-session facts via WTS (`session.state` with `active`/`locked`/`disconnected`, `proc.sample` basenames for that SID excluding SYSTEM/LocalService/NetworkService, deduped/sorted, capped at 200). `dur_s` is elapsed since the previous successful sample clamped to `[1, min(2×interval, 300)]` (contract `FactDurMaxSeconds`); a wall-clock jump `> 2×interval` (sleep heuristic) or `Sampler.Reset()` (on power resume) drops the previous timestamp. A tick with **zero** facts does **not** enqueue (no empty keepalive — heartbeat carries zone); when facts are present, batches are written to the durable facts queue even if `backend_url` is empty. |
 | **Facts uploader** | `internal/factsup` (+ `internal/factsq`) | FIFO upload of immutable batch files from `C:\ProgramData\DadJoke\facts\` to `POST /v1/facts` (one batch in flight). `200` (incl. `duplicate:true`) deletes the batch; `400`/`413` move it to `rejected\`; `401`/`403` retain and back off (token redacted in logs); `5xx`/network retry the same bytes. Exponential backoff with jitter (cap 5 min); honours `Retry-After` on `429`. Empty `backend_url` → idle with no error noise. Honours context cancel so SCM stop stays within budget. |
+| **Session supervisor** | `internal/sessionagent` (+ `internal/winsess` launch) | Ensures exactly one `dad-joke.exe session` per interactive user session; see [Two-process Windows agent](#two-process-windows-agent). Enqueues `session.restarted` markers into the shared facts queue on unexpected child exit + relaunch. |
 
 ### Facts queue (`C:\ProgramData\DadJoke\facts\`)
 
@@ -176,7 +197,7 @@ Multi-stage `Dockerfile`: Node TypeSpec → OpenAPI, then Go `oapi-codegen` + st
 - Total cap **20 MiB**; overflow deletes oldest batches and the next enqueued batch embeds a `queue.dropped` fact (`dropped_batches`, `dropped_bytes`, `dur_s=0`). Corrupt/zero-byte files are quarantined under `rejected\`.
 - Directory and files: `SYSTEM` + `Administrators` only (`internal/acl`).
 
-Independence: backend DNS/5xx/401/outage is logged (with the raw `token` redacted) and must not stop the service, the updater loop, the job worker, or the sampler. A slow or timed-out job must never stall heartbeats, sampling, or update polling. Empty `backend_url` disables heartbeats/job discovery/upload with no error noise; the sampler still enqueues non-empty batches locally (bounded by the queue cap).
+Independence: backend DNS/5xx/401/outage is logged (with the raw `token` redacted) and must not stop the service, the updater loop, the job worker, the sampler, or the session supervisor. A slow or timed-out job must never stall heartbeats, sampling, update polling, or session supervision. Empty `backend_url` disables heartbeats/job discovery/upload with no error noise; the sampler still enqueues non-empty batches locally (bounded by the queue cap).
 
 Transport for `backend_url`: empty allowed; non-empty requires `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`); no URL userinfo; system CA verification; TLS `MinVersion` 1.2; redirects re-validated and strip `Authorization` on cross-host hops.
 
@@ -196,7 +217,7 @@ Job contract fields used by the agent (from `api/common/jobs.tsp`): `type` (`pow
 Every change requires an independent review that verifies alignment with these invariants—layer boundaries, KISS/SOLID/statelessness, Windows security/ACL correctness, edge cases, and test coverage—plus green CI:
 
 - API generate + race test/vet (live MongoDB DAL)
-- Windows test/build + native `windows-latest` E2E (`-tags=e2e`: install/ACL, update, heartbeat, jobs Job Object timeout/truncation, **Restart-Service** config+token persistence)
+- Windows test/build + native `windows-latest` E2E (`-tags=e2e`: install/ACL, update, heartbeat, jobs Job Object timeout/truncation, **Restart-Service** config+token persistence, session-agent launch/kill/restart/stop when an interactive session is available)
 - Linux full-stack E2E (`e2e/linux`, `-tags=e2e`: register → PAT/`dj_agt_` → heartbeat → MCP `list_machines`/`set_policy`/`run_script`/`get_job`/`list_events` → cross-tenant isolation → revocation `401` → fail-closed MongoDB)
 - Compose image smoke (non-root, read-only rootfs, `/healthz`) + `scripts/smoke-e2e.sh`
 - No-leak gate over public deploy/scripts/docs/workflows

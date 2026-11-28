@@ -48,6 +48,10 @@ type Options struct {
 	Signals []os.Signal
 	// ForceForeground skips SCM detection (diagnostics / tests).
 	ForceForeground bool
+	// Events receives SCM session/power notifications (non-blocking sends).
+	// Nil disables forwarding. Caller owns the channel; typically shared with
+	// the session-agent supervisor (session-events/v1).
+	Events chan<- Event
 }
 
 // ServiceRunner runs as a Windows Service when launched by SCM, otherwise
@@ -57,6 +61,7 @@ type ServiceRunner struct {
 	agent           Agent
 	signals         []os.Signal
 	forceForeground bool
+	events          chan<- Event
 }
 
 // New returns the platform default Runner.
@@ -80,6 +85,7 @@ func NewRunner(opts Options) *ServiceRunner {
 		agent:           opts.Agent,
 		signals:         opts.Signals,
 		forceForeground: opts.ForceForeground,
+		events:          opts.Events,
 	}
 }
 
@@ -91,7 +97,7 @@ func (r *ServiceRunner) Run(ctx context.Context) error {
 	if r.forceForeground || !isWindowsServiceSession() {
 		return r.runForeground(ctx)
 	}
-	return runWindowsService(r.name, r.agent)
+	return runWindowsService(r.name, r.agent, r.events)
 }
 
 func (r *ServiceRunner) runForeground(ctx context.Context) error {
