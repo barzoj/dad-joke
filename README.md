@@ -141,33 +141,66 @@ Production compose bundles **Caddy** for automatic HTTPS on 80/443. Any reverse 
 - Forwards to `server:8080` on the internal Docker network
 - Does **not** publish MongoDB (`27017`) or the app port (`8080`) to the internet
 
-### Bootstrap user and tokens
+### First credentials (`ALLOW_SIGNUP=false`)
 
-With `ALLOW_SIGNUP=false`, create the first user inside the running container:
+`create-user` and `bootstrap` each create a **new** tenant. Use **one** path, not both — running both leaves an orphan tenant/PAT.
+
+#### Path A (recommended): `create-user` → login → tokens
+
+Creates a tenant + email/password user (works even when HTTP signup is disabled):
 
 ```bash
 docker compose -f deploy/compose.prod.yml --env-file deploy/.env \
   exec server /server create-user --email you@example.com --password 'choose-a-strong-password'
+# optional: --tenant-name home  (default tenant name = email)
 ```
 
-Optional: create a tenant and the first API key (`dj_pat_…` printed once to stdout):
+Log in (`POST /v1/auth/login`; body fields `email`, `password` from TypeSpec `LoginRequest`):
+
+```bash
+curl -fsS -X POST https://api.your-server.example/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"choose-a-strong-password"}'
+```
+
+`200` JSON (`AuthSession`): `access_token` (`dj_ses_…`), `token_type` (`"Bearer"`), `expires_at`, and `user` (`id`, `email`, `tenant_id`). The same session is also set as an `HttpOnly` cookie `dj_session`. Use the bearer session for the next calls:
+
+```bash
+SESSION='dj_ses_<64 hex>'   # from access_token above
+
+# Optional but recommended for MCP / automation: issue a PAT (CreateApiKeyRequest: name)
+curl -fsS -X POST https://api.your-server.example/v1/api-keys \
+  -H "Authorization: Bearer ${SESSION}" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ops"}'
+# 201 CreatedApiKey: id, name, prefix, token (dj_pat_… once), created_at, last_used_at, expires_at
+
+PAT='dj_pat_<64 hex>'       # from token above; or keep using SESSION
+
+# Agent token for the Windows install (CreateAgentTokenRequest: name)
+curl -fsS -X POST https://api.your-server.example/v1/agent-tokens \
+  -H "Authorization: Bearer ${PAT}" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"living-room-pc"}'
+# 201 CreatedAgentToken: id, name, prefix, token (dj_agt_… once), created_at, last_used_at, expires_at
+```
+
+Store the raw `dj_agt_…` for [`install --token`](#install). Then [install the Windows agent](#install-the-windows-agent) and [connect an MCP client](#connect-an-mcp-client) with the PAT (or session). You can also create agent tokens via MCP `manage_agent_tokens` (`action=create`).
+
+#### Path B (alternative): `bootstrap` only (PAT, no user)
+
+Creates a tenant and prints one `dj_pat_…` to stdout (name `bootstrap`). There is **no** email/password user — you cannot `POST /v1/auth/login`. Use the PAT for ControlAPI / MCP / agent-token creation only:
 
 ```bash
 docker compose -f deploy/compose.prod.yml --env-file deploy/.env \
   exec server /server bootstrap --tenant home
-```
+# stdout: dj_pat_<64 hex>  (once)
 
-Create an **agent token** (ControlAPI) after login or with a PAT:
-
-```bash
 curl -fsS -X POST https://api.your-server.example/v1/agent-tokens \
   -H "Authorization: Bearer dj_pat_<64 hex>" \
   -H 'Content-Type: application/json' \
   -d '{"name":"living-room-pc"}'
 ```
-
-The `201` response includes the raw `dj_agt_…` secret once — store it for the Windows install `--token` flag. You can also create tokens via MCP `manage_agent_tokens` (`action=create`).
-
 ### Backups and upgrades
 
 ```bash
@@ -236,13 +269,13 @@ Create an agent token on the server first (`dj_agt_…`). Then, from an elevated
 .\dad-joke-windows-amd64.exe install --token dj_agt_<64 hex> --backend-url https://api.your-server.example --heartbeat-interval 60
 ```
 
-<!-- /docs-check:install-flags -->
-
 | Flag | Required | Notes |
 | --- | --- | --- |
 | `--token` | No | Backend-issued agent token (e.g. `dj_agt_…`). If omitted, a local 64-char hex token is generated and printed once. Empty/whitespace values are rejected. |
 | `--backend-url` | No | AgentAPI base URL. Must be `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`). No URL userinfo. Empty = local-only (no heartbeat). |
 | `--heartbeat-interval` | No | Seconds (≥ 1). Default when unset in config is `60`. |
+
+<!-- /docs-check:install-flags -->
 
 Install outcome lines include `machine_id=…` and `token=…` / `token=(set from --token)` / `token=(preserved)`.
 
@@ -269,7 +302,11 @@ The running service polls GitHub Releases (default `poll_interval_seconds=60`), 
 
 ### Reinstall
 
-Running `install` again is idempotent: existing `machine_id` and `token` are **preserved** unless you pass `--token` (and matching backend flags) to replace them.
+Running `install` again is idempotent:
+
+- `machine_id` is **never** replaced once present.
+- `token` is preserved unless you pass `--token` (then the new value is stored verbatim).
+- `--backend-url` / `--heartbeat-interval` alone update those fields only; they do **not** rotate the token.
 
 ### Uninstall
 

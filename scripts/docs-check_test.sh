@@ -202,7 +202,54 @@ EOF
 assert_fails_with "unclosed mermaid" "unclosed" \
   env DOCS_CHECK_ROOT="${TMP}" "${CHECK}"
 
-# --- Fixture F: clean tree passes ---
+# --- Fixture F: multiple failures reported in one run ---
+cat >"${TMP}/README.md" <<'EOF'
+# Dad Joke
+
+See [missing](docs/DOES_NOT_EXIST.md).
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+<!-- docs-check:install-flags -->
+`install --token X --bogus-flag Z`
+| `--bogus-flag` | bad |
+<!-- /docs-check:install-flags -->
+
+<!-- docs-check:env-vars -->
+| `FOO_BAR` | unknown |
+<!-- /docs-check:env-vars -->
+EOF
+{
+  set +e
+  multi_out="$(env DOCS_CHECK_ROOT="${TMP}" "${CHECK}" 2>&1)"
+  multi_rc=$?
+  set -e
+  if [[ "${multi_rc}" -eq 0 ]]; then
+    echo "FAIL: multiple failures: expected non-zero exit" >&2
+    echo "${multi_out}" >&2
+    FAIL=$((FAIL + 1))
+  else
+    missing=0
+    for needle in "broken relative link" "--bogus-flag" "FOO_BAR"; do
+      if ! printf '%s\n' "${multi_out}" | grep -qF -- "${needle}"; then
+        echo "FAIL: multiple failures: missing needle: ${needle}" >&2
+        missing=1
+      fi
+    done
+    if [[ "${missing}" -eq 1 ]]; then
+      echo "${multi_out}" >&2
+      FAIL=$((FAIL + 1))
+    else
+      echo "ok: multiple failures reported together"
+      PASS=$((PASS + 1))
+    fi
+  fi
+}
+
+# --- Fixture G: clean tree passes ---
 cat >"${TMP}/README.md" <<'EOF'
 # Dad Joke
 
@@ -223,6 +270,11 @@ flowchart LR
 ```powershell
 .\dad-joke-windows-amd64.exe install --token dj_agt_example --backend-url https://api.your-server.example --heartbeat-interval 60
 ```
+| Flag | Notes |
+| --- | --- |
+| `--token` | agent token |
+| `--backend-url` | API base |
+| `--heartbeat-interval` | seconds |
 <!-- /docs-check:install-flags -->
 
 <!-- docs-check:env-vars -->
