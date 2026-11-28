@@ -116,7 +116,8 @@ if (-not (Test-Path -LiteralPath $root)) {
   Write-Output 'root=missing'
   exit 0
 }
-$hit = $null
+$exact = $null
+$fuzzy = $null
 Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
   $name = $_.PSChildName
   $p = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
@@ -124,14 +125,24 @@ Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object 
   $disp = [string]$p.'(default)'
   if (-not $disp) { $disp = [string]$p.DisplayName }
   $lines.Add(('ext name=' + $name + ' dll=' + $dll + ' display=' + $disp))
-  if ($name -ieq $want -or $disp -match 'AppLocker' -or $dll -match '(?i)AppID|AppLocker') {
-    if (-not $hit) { $hit = $name }
+  if ($name -ieq $want) {
+    $exact = $name
+  } elseif (-not $fuzzy -and ($disp -match 'AppLocker' -or $dll -match '(?i)AppID|AppLocker')) {
+    $fuzzy = $name
   }
+}
+$hit = $exact
+$how = 'exact'
+if (-not $hit) {
+  $hit = $fuzzy
+  $how = 'fuzzy'
 }
 if ($hit) {
   Write-Output ('cse=' + $hit)
+  Write-Output ('match=' + $how)
 } else {
   Write-Output 'cse=not-found'
+  Write-Output 'match=none'
 }
 Write-Output '---'
 $lines | ForEach-Object { Write-Output $_ }
@@ -143,6 +154,7 @@ $lines | ForEach-Object { Write-Output $_ }
 	}
 	cse := cseAppLocker
 	found := false
+	matchHow := "none"
 	var extLines []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -157,6 +169,10 @@ $lines | ForEach-Object { Write-Output $_ }
 			}
 			continue
 		}
+		if strings.HasPrefix(line, "match=") {
+			matchHow = strings.TrimPrefix(line, "match=")
+			continue
+		}
 		if line == "---" || line == "" || line == "root=missing" {
 			continue
 		}
@@ -164,8 +180,8 @@ $lines | ForEach-Object { Write-Output $_ }
 			extLines = append(extLines, line)
 		}
 	}
-	note := fmt.Sprintf("GPExtensions AppLocker CSE present=%v cse=%s; tool GUID not present under GPExtensions (CSE registration only); using MS-GPOL NULL tool GUID %s — not an invented snap-in GUID. sample_exts=%d",
-		found, cse, toolGUIDNull, len(extLines))
+	note := fmt.Sprintf("GPExtensions AppLocker CSE present=%v cse=%s match=%s (exact GUID preferred, fuzzy AppLocker/AppID name fallback); tool GUID not present under GPExtensions (CSE registration only); using MS-GPOL NULL tool GUID %s — not an invented snap-in GUID. sample_exts=%d",
+		found, cse, matchHow, toolGUIDNull, len(extLines))
 	if len(extLines) > 0 {
 		// Keep a short, non-sensitive sample for CI logs/findings.
 		sample := extLines
