@@ -2,6 +2,7 @@ import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
 import "../common/events.tsp";
+import "../common/facts.tsp";
 import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
@@ -57,6 +58,19 @@ model HeartbeatRequest {
   /** Policy version the agent has successfully applied locally. */
   @minValue(0)
   applied_policy_version: int32;
+
+  /** IANA time zone id for machine-local day boundaries (1..64 characters). */
+  @minLength(1)
+  @maxLength(64)
+  time_zone: string;
+
+  /**
+   * UTC offset of the machine-local zone at heartbeat time, in minutes (−840..840).
+   * Cross-check for a wrong Windows→IANA mapping.
+   */
+  @minValue(-840)
+  @maxValue(840)
+  utc_offset_minutes: int32;
 }
 
 /** Heartbeat acknowledgement and next-desired-state hints. */
@@ -141,6 +155,33 @@ interface Events {
   op postEvents(@body body: PostEventsRequest): {
     @statusCode _: 204;
   } | StandardErrors;
+}
+
+/** Documented failure statuses for AgentAPI facts ingest. */
+alias FactsIngestErrors = BadRequestError
+  | UnauthorizedError
+  | PayloadTooLargeError
+  | TooManyRequestsError
+  | ServiceUnavailableError;
+
+@route("/v1/facts")
+interface Facts {
+  /**
+   * Ingest a compact batch of raw agent facts (session/process/fg samples).
+   * Requires AgentBearerAuth (`Authorization: Bearer dj_agt_...`).
+   *
+   * Hard limits: max 500 facts (`400` when exceeded) and max 256 KiB
+   * request body (`413`). `(stream_id, seq)` is the idempotency key;
+   * identical retries return `duplicate:true`. Empty `facts` is a
+   * no-op success. See `api/common/facts.tsp` for per-kind data rules.
+   */
+  @post
+  @operationId("postFacts")
+  op postFacts(@body body: PostFactsRequest): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: FactsAck;
+  } | FactsIngestErrors;
 }
 
 @route("/v1/jobs")

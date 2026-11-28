@@ -106,6 +106,157 @@ func TestOpenAPI_SeparateSecuritySchemes(t *testing.T) {
 	if !strings.Contains(controlText, "EventListResponse:") || !strings.Contains(controlText, "MachineEvent:") {
 		t.Fatal("control OpenAPI missing EventListResponse / MachineEvent schemas")
 	}
+	if !strings.Contains(agentText, "/v1/facts:") {
+		t.Fatal("agent OpenAPI missing /v1/facts")
+	}
+	if !strings.Contains(agentText, "PostFactsRequest:") || !strings.Contains(agentText, "FactItem:") || !strings.Contains(agentText, "FactsAck:") {
+		t.Fatal("agent OpenAPI missing PostFactsRequest / FactItem / FactsAck schemas")
+	}
+	if !strings.Contains(controlText, "/v1/machines/{machine_id}/usage:") {
+		t.Fatal("control OpenAPI missing /v1/machines/{machine_id}/usage")
+	}
+	if !strings.Contains(controlText, "MachineUsage:") || !strings.Contains(controlText, "AppUsage:") {
+		t.Fatal("control OpenAPI missing MachineUsage / AppUsage schemas")
+	}
+}
+
+func TestOpenAPI_FactsAndUsageContractShapes(t *testing.T) {
+	t.Parallel()
+
+	agentSpec, err := os.ReadFile(openAPIPath(t, "agent"))
+	if err != nil {
+		t.Fatalf("read agent openapi: %v", err)
+	}
+	controlSpec, err := os.ReadFile(openAPIPath(t, "control"))
+	if err != nil {
+		t.Fatalf("read control openapi: %v", err)
+	}
+	agentText := string(agentSpec)
+	controlText := string(controlSpec)
+
+	postFacts := schemaBlock(t, agentText, "PostFactsRequest")
+	for _, req := range []string{"machine_id", "stream_id", "seq", "sent_at", "time_zone", "utc_offset_minutes", "facts"} {
+		if !strings.Contains(postFacts, "- "+req) {
+			t.Fatalf("PostFactsRequest required missing %q in:\n%s", req, postFacts)
+		}
+	}
+	if !strings.Contains(postFacts, "format: uuid") {
+		t.Fatal("PostFactsRequest uuid fields missing format: uuid")
+	}
+	if !strings.Contains(postFacts, "minimum: 1") {
+		t.Fatal("PostFactsRequest seq missing minimum: 1")
+	}
+	if !strings.Contains(postFacts, "maxItems: 500") {
+		t.Fatal("PostFactsRequest facts missing maxItems: 500")
+	}
+	if !strings.Contains(postFacts, "minimum: -840") || !strings.Contains(postFacts, "maximum: 840") {
+		t.Fatal("PostFactsRequest utc_offset_minutes missing −840..840 bounds")
+	}
+
+	factItem := schemaBlock(t, agentText, "FactItem")
+	if !strings.Contains(factItem, "minimum: 0") || !strings.Contains(factItem, "maximum: 300") {
+		t.Fatal("FactItem dur_s missing 0..300 bounds")
+	}
+
+	factData := schemaBlock(t, agentText, "FactData")
+	if !strings.Contains(factData, "maxLength: 256") {
+		t.Fatal("FactData title missing maxLength: 256")
+	}
+	if !strings.Contains(factData, "idle_s:") || !strings.Contains(factData, "minimum: 0") {
+		t.Fatal("FactData idle_s missing minimum: 0")
+	}
+	if !strings.Contains(factData, "exes:") || !strings.Contains(factData, "ExeName") {
+		t.Fatal("FactData exes must reference ExeName (per-item maxLength)")
+	}
+	exeName := schemaBlock(t, agentText, "DadJoke.Common.ExeName")
+	if !strings.Contains(exeName, "maxLength: 260") {
+		t.Fatal("ExeName missing maxLength: 260 (exes item constraint)")
+	}
+
+	kindBlock := schemaBlock(t, agentText, "DadJoke.Common.FactKind")
+	wantKinds := []string{"session.state", "proc.sample", "fg.sample", "queue.dropped", "session.restarted"}
+	for _, k := range wantKinds {
+		if !strings.Contains(kindBlock, "- "+k) {
+			t.Fatalf("FactKind missing %q in:\n%s", k, kindBlock)
+		}
+	}
+	// Exact set: no extras beyond the five values.
+	enumLines := 0
+	for _, line := range strings.Split(kindBlock, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "- ") && !strings.HasPrefix(trim, "- $") {
+			enumLines++
+		}
+	}
+	if enumLines != len(wantKinds) {
+		t.Fatalf("FactKind enum count = %d, want %d; block:\n%s", enumLines, len(wantKinds), kindBlock)
+	}
+
+	hb := schemaBlock(t, agentText, "HeartbeatRequest")
+	for _, req := range []string{"time_zone", "utc_offset_minutes"} {
+		if !strings.Contains(hb, "- "+req) {
+			t.Fatalf("HeartbeatRequest required missing %q", req)
+		}
+	}
+
+	factsPath := pathBlock(t, agentText, "/v1/facts")
+	for _, code := range []string{"'200'", "'400'", "'401'", "'413'", "'429'", "'503'"} {
+		if !strings.Contains(factsPath, code+":") {
+			t.Fatalf("/v1/facts missing response %s", code)
+		}
+	}
+	if !strings.Contains(factsPath, "Retry-After:") {
+		t.Fatal("/v1/facts 429 missing Retry-After")
+	}
+	if !strings.Contains(factsPath, "ErrorResponse") {
+		t.Fatal("/v1/facts error responses missing ErrorResponse")
+	}
+
+	usagePath := pathBlock(t, controlText, "/v1/machines/{machine_id}/usage")
+	if !strings.Contains(usagePath, "name: date") || !strings.Contains(usagePath, "required: true") {
+		t.Fatal("usage operation missing required date query")
+	}
+	if !strings.Contains(usagePath, "format: date") {
+		t.Fatal("usage date query missing format: date")
+	}
+	if strings.Contains(usagePath, "name: tz") {
+		t.Fatal("usage operation must not declare tz parameter")
+	}
+	for _, code := range []string{"'200'", "'400'", "'401'", "'404'", "'429'", "'503'"} {
+		if !strings.Contains(usagePath, code+":") {
+			t.Fatalf("usage missing response %s", code)
+		}
+	}
+
+	appUsage := schemaBlock(t, controlText, "AppUsage")
+	for _, req := range []string{"exe", "seconds", "fg_seconds"} {
+		if !strings.Contains(appUsage, "- "+req) {
+			t.Fatalf("AppUsage required missing %q", req)
+		}
+	}
+}
+
+var pathKeyRE = regexp.MustCompile(`(?m)^  (/[^:\n]+):\n`)
+
+// pathBlock returns the YAML text for a named paths entry.
+func pathBlock(t *testing.T, openapi, path string) string {
+	t.Helper()
+	matches := pathKeyRE.FindAllStringSubmatchIndex(openapi, -1)
+	var start, end int = -1, len(openapi)
+	for i, m := range matches {
+		key := openapi[m[2]:m[3]]
+		if key == path {
+			start = m[1]
+			if i+1 < len(matches) {
+				end = matches[i+1][0]
+			}
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("path %q not found", path)
+	}
+	return openapi[start:end]
 }
 
 func TestGoModels_RawTokenOnlyOnCreatedResponses(t *testing.T) {

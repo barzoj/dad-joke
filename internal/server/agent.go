@@ -56,6 +56,13 @@ func (a *AgentAPI) PostHeartbeat(ctx context.Context, req agentapi.PostHeartbeat
 			RequestId: uuid.NewString(),
 		}, nil
 	}
+	if err := validateMachineTimeZone(body.TimeZone, body.UtcOffsetMinutes); err != nil {
+		return agentapi.PostHeartbeat400JSONResponse{
+			Code:      "bad_request",
+			Message:   err.Error(),
+			RequestId: uuid.NewString(),
+		}, nil
+	}
 	now := a.now()
 
 	desired := int32(0)

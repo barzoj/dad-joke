@@ -90,7 +90,7 @@ echo "==> heartbeat machine ${MACHINE_ID}"
 HB_CODE=$(curl -sS -o /tmp/dj-smoke-hb.json -w '%{http_code}' -X POST "${BASE_URL}/v1/heartbeat" \
   -H "Authorization: Bearer ${AGT}" \
   -H 'Content-Type: application/json' \
-  -d "{\"machine_id\":\"${MACHINE_ID}\",\"agent_version\":\"0.0.1-smoke\",\"hostname\":\"smoke\",\"os_version\":\"linux\",\"applied_policy_version\":0}")
+  -d "{\"machine_id\":\"${MACHINE_ID}\",\"agent_version\":\"0.0.1-smoke\",\"hostname\":\"smoke\",\"os_version\":\"linux\",\"applied_policy_version\":0,\"time_zone\":\"UTC\",\"utc_offset_minutes\":0}")
 if [[ "${HB_CODE}" != "200" ]]; then
   echo "heartbeat failed: ${HB_CODE}" >&2
   cat /tmp/dj-smoke-hb.json >&2 || true

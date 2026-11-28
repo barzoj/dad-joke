@@ -84,6 +84,8 @@ func TestIntegration_PolicyCRUD_AllAcceptanceCriteria(t *testing.T) {
 	code, body = postHeartbeat(t, base, agentA, map[string]any{
 		"machine_id": machineID, "agent_version": "0.0.1", "hostname": "kid",
 		"os_version": "Win", "applied_policy_version": 0,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("AC3 heartbeat: %d %s", code, body)

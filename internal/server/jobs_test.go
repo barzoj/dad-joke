@@ -194,6 +194,8 @@ func TestJobs_ExpiredNotHandedOrClaimable(t *testing.T) {
 	code, hbBody := postHeartbeat(t, base, agent, map[string]any{
 		"machine_id": machineID, "agent_version": "1", "hostname": "h",
 		"os_version": "Win", "applied_policy_version": 0,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %s", code, hbBody)
@@ -425,6 +427,8 @@ func TestJobs_HeartbeatPendingImmediately(t *testing.T) {
 	code, hbBody := postHeartbeat(t, base, agent, map[string]any{
 		"machine_id": machineID, "agent_version": "1", "hostname": "h",
 		"os_version": "Win", "applied_policy_version": 0,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %s", code, hbBody)

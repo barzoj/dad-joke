@@ -185,6 +185,21 @@ func assertStructuredContentObject(t *testing.T, res *mcpsdk.CallToolResult) {
 	}
 }
 
+func assertErrorJSON(t *testing.T, raw []byte) {
+	t.Helper()
+	var er struct {
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(raw, &er); err != nil {
+		t.Fatalf("ErrorResponse decode: %v body=%s", err, raw)
+	}
+	if er.Code == "" || er.Message == "" || er.RequestID == "" {
+		t.Fatalf("incomplete ErrorResponse: %+v", er)
+	}
+}
+
 func postJSON(t *testing.T, method, url, bearer string, body any) (int, []byte) {
 	t.Helper()
 	var rdr io.Reader
@@ -265,6 +280,8 @@ func heartbeat(t *testing.T, base, agentTok, machineID string, applied int) (int
 		"hostname":               "e2e-linux",
 		"os_version":             "linux",
 		"applied_policy_version": applied,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	var body map[string]any
 	_ = json.Unmarshal(raw, &body)
@@ -340,6 +357,60 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %v", code, hb)
 	}
+
+	// Facts / usage contracts are mounted but not yet implemented (501 JSON).
+	factsBody := map[string]any{
+		"machine_id":         machineID,
+		"stream_id":          uuid.NewString(),
+		"seq":                1,
+		"sent_at":            time.Now().UTC().Format(time.RFC3339),
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
+		"facts":              []any{},
+	}
+	code, raw := postJSON(t, http.MethodPost, base+"/v1/facts", agentTok, factsBody)
+	if code != http.StatusNotImplemented {
+		t.Fatalf("POST /v1/facts want 501, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/facts", "", factsBody)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("POST /v1/facts unauthenticated want 401, got %d %s", code, raw)
+	}
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=2026-11-28", patA, nil)
+	if code != http.StatusNotImplemented {
+		t.Fatalf("GET usage want 501, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=2026-11-28", "", nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("GET usage unauthenticated want 401, got %d %s", code, raw)
+	}
+
+	// Production-path contract validation (before 501 stub).
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/heartbeat", agentTok, map[string]any{
+		"machine_id": machineID, "agent_version": "0.0.1-e2e", "hostname": "e2e-linux",
+		"os_version": "linux", "applied_policy_version": 0,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("heartbeat missing time_zone want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	badFacts := map[string]any{
+		"machine_id": machineID, "stream_id": uuid.NewString(), "seq": 0,
+		"sent_at": time.Now().UTC().Format(time.RFC3339), "time_zone": "UTC",
+		"utc_offset_minutes": 0, "facts": []any{},
+	}
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/facts", agentTok, badFacts)
+	if code != http.StatusBadRequest {
+		t.Fatalf("facts seq=0 want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=", patA, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("usage empty date want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
 
 	machinesObj := decodeToolJSON(t, callTool(t, mcpA, "list_machines", nil)).(map[string]any)
 	machines, _ := machinesObj["machines"].([]any)

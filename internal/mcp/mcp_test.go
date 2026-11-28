@@ -193,6 +193,8 @@ func heartbeat(t *testing.T, base, agentTok, machineID string) int {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(body))
 	if err != nil {

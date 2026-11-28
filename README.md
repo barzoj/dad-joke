@@ -38,10 +38,11 @@ Design and threat-model details live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTU
 Only what exists on `main` today:
 
 - **Windows service agent** — delayed auto-start under `LocalSystem`, SCM failure recovery (restart), outbound firewall allow rule for the agent binary, strict `SYSTEM` + `Administrators` ACLs on install and data directories.
-- **Heartbeat & machine inventory** — agent posts `POST /v1/heartbeat`; ControlAPI lists machines with computed `online` / `offline` status.
+- **Heartbeat & machine inventory** — agent posts `POST /v1/heartbeat` (includes `time_zone` / `utc_offset_minutes`); ControlAPI lists machines with computed `online` / `offline` status.
 - **Versioned low-level policies** — opaque JSON desired state per machine with monotonic versions (`expected_version` optimistic concurrency); agents fetch applied/desired versions via AgentAPI.
 - **One-shot jobs** — enqueue `powershell` or `cmd` scripts; agent claims under a Job Object with hard timeouts, 64 KiB I/O caps, and local JSONL audit.
 - **Events** — agent telemetry ingest with idempotent `event_id`s and a 30-day MongoDB TTL.
+- **Facts & usage (contracts)** — AgentAPI `POST /v1/facts` and ControlAPI `GET /v1/machines/{machine_id}/usage?date=` are defined and mounted; handlers return `501` until persistence lands.
 - **Self-update** — SHA-256–verified updates from GitHub Releases (poll interval default 60s); automatic service restart after apply.
 - **Multi-tenant backend** — local email/password auth, revocable sessions (`dj_ses_…`), agent tokens (`dj_agt_…`), API keys (`dj_pat_…`).
 - **Remote MCP** — Streamable HTTP at `/mcp` with seven tools: `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `manage_agent_tokens`.
