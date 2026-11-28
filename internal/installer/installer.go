@@ -155,6 +155,7 @@ func (s *Service) Install(ctx context.Context, opts InstallOptions) (InstallOutc
 			return rollback(fmt.Errorf("wait stopped before replace: %w", err))
 		}
 		// Session agents map the installed image; free it before rename/replace.
+		// Order: StopService → WaitForState(Stopped) → StopSessionAgents.
 		s.host.Log("install: stopping session agents before binary update")
 		if err := s.host.StopSessionAgents(s.paths.BinaryPath); err != nil {
 			return rollback(fmt.Errorf("stop session agents before replace: %w", err))

@@ -120,6 +120,10 @@ func TestInstallReinstallWhileRunning(t *testing.T) {
 	if h.stopSessionAgentsCalls < 1 {
 		t.Fatal("expected StopSessionAgents after service stop before binary replace")
 	}
+	wantOrder := []string{"StopService", "WaitForState:Stopped", "StopSessionAgents"}
+	if !orderHasPrefix(h.order, wantOrder) {
+		t.Fatalf("stop order = %v, want prefix %v", h.order, wantOrder)
+	}
 	if string(h.files[paths.BinaryPath]) != "binary-v2" {
 		t.Fatalf("binary not replaced: %q", h.files[paths.BinaryPath])
 	}
@@ -725,7 +729,17 @@ func (m *mockHost) StopService(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopCalls++
+	m.order = append(m.order, "StopService")
 	m.serviceState[name] = StateStopped
+	return nil
+}
+func (m *mockHost) WaitForState(name string, state ServiceState, _ time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.order = append(m.order, "WaitForState:"+string(state))
+	if m.serviceState[name] != state {
+		return fmt.Errorf("state=%s want=%s", m.serviceState[name], state)
+	}
 	return nil
 }
 func (m *mockHost) StopSessionAgents(binaryPath string) error {
@@ -733,6 +747,7 @@ func (m *mockHost) StopSessionAgents(binaryPath string) error {
 	defer m.mu.Unlock()
 	m.stopSessionAgentsCalls++
 	m.stopSessionAgentsPath = binaryPath
+	m.order = append(m.order, "StopSessionAgents")
 	return nil
 }
 func (m *mockHost) DeleteService(name string) error {
@@ -746,14 +761,6 @@ func (m *mockHost) ServiceExists(name string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.services[name], nil
-}
-func (m *mockHost) WaitForState(name string, state ServiceState, _ time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.serviceState[name] != state {
-		return fmt.Errorf("state=%s want=%s", m.serviceState[name], state)
-	}
-	return nil
 }
 func (m *mockHost) EnsureFirewallRule(rule FirewallRuleSpec) error {
 	m.mu.Lock()
@@ -784,4 +791,16 @@ func (m *mockHost) Log(format string, args ...any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logs = append(m.logs, fmt.Sprintf(format, args...))
+}
+
+func orderHasPrefix(got, want []string) bool {
+	if len(got) < len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

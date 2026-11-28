@@ -641,13 +641,12 @@ func TestStopAbortsInFlightLaunch(t *testing.T) {
 		close(entered)
 		<-release
 		ch := newFakeChild(4242)
-		// Count Terminate so we know the post-stop child was reaped.
 		return &countingTermChild{fakeChild: ch, n: &termCount}, nil
 	}
 	src := &fixedSessions{list: []Session{{ID: 1, UserName: "a"}}}
 	s := &Supervisor{
 		Events: events, Sessions: src, Launcher: launch, Sink: &recordingSink{},
-		Clock: newMemClock(time.Now()), Log: NopLogger{}, StopBudget: 500 * time.Millisecond,
+		Clock: newMemClock(time.Now()), Log: NopLogger{}, StopBudget: 2 * time.Second,
 	}
 	cancel, errCh := startSup(t, s)
 	select {
@@ -656,23 +655,60 @@ func TestStopAbortsInFlightLaunch(t *testing.T) {
 		t.Fatal("Launch never started")
 	}
 	cancel()
+	// Shutdown must join the in-flight Launch — Run must not return first.
 	select {
 	case <-errCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stop blocked on in-flight Launch")
+		t.Fatal("Run returned while Launch still in flight")
+	case <-time.After(50 * time.Millisecond):
 	}
 	close(release)
-	deadline := time.Now().Add(2 * time.Second)
-	for termCount.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-errCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown did not return after in-flight Launch finished")
 	}
 	if termCount.Load() == 0 {
-		t.Fatal("late Launch child was not terminated after stop")
+		t.Fatal("late Launch child was not reaped before Run returned")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.children) != 0 {
 		t.Fatalf("children left after stop: %d", len(s.children))
+	}
+}
+
+func TestStopBudgetExpiresWhileLaunchWedged(t *testing.T) {
+	t.Parallel()
+	events := make(chan service.Event, 2)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	launch := newFakeLauncher(1)
+	launch.launchFn = func(sessionID uint32) (Child, error) {
+		close(entered)
+		<-release // never released until cleanup — Launch stays wedged
+		return newFakeChild(99), nil
+	}
+	src := &fixedSessions{list: []Session{{ID: 1, UserName: "a"}}}
+	s := &Supervisor{
+		Events: events, Sessions: src, Launcher: launch, Sink: &recordingSink{},
+		Clock: newMemClock(time.Now()), Log: NopLogger{}, StopBudget: 80 * time.Millisecond,
+	}
+	cancel, errCh := startSup(t, s)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Launch never started")
+	}
+	start := time.Now()
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not return within StopBudget while Launch wedged")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("stop took %v, want near StopBudget", elapsed)
 	}
 }
 

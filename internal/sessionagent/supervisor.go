@@ -72,7 +72,8 @@ type tracked struct {
 	child       Child
 	backoff     sessionBackoff
 	watchCancel context.CancelFunc
-	launching   bool // true while Launch runs without s.mu
+	launching   bool          // true while finishLaunch runs
+	launchDone  chan struct{} // closed when finishLaunch returns
 }
 
 // Supervisor reconciles one session agent per interactive user session.
@@ -91,6 +92,7 @@ type Supervisor struct {
 	mu       sync.Mutex
 	children map[uint32]*tracked
 	stopped  bool
+	runCtx   context.Context // set for the lifetime of Run
 }
 
 // New returns a production supervisor wired to winsess and the installed binary.
@@ -131,6 +133,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if s.StopBudget <= 0 {
 		s.StopBudget = 40 * time.Second
 	}
+	s.runCtx = ctx
 
 	s.Log.Log("sessionagent: supervisor starting")
 	s.reconcile(ctx)
@@ -271,31 +274,37 @@ func (s *Supervisor) reconcile(ctx context.Context) {
 }
 
 // launchLocked starts a session agent asynchronously. Caller must hold s.mu.
-// Launch runs on a goroutine so service stop is never blocked on
-// CreateProcessAsUser; if stop wins the race the new child is terminated.
+// Launch runs on a goroutine; shutdown joins launchDone (≤ StopBudget) so
+// CreateProcessAsUser cannot outlive SCM stop without a join attempt.
 func (s *Supervisor) launchLocked(ctx context.Context, sessionID uint32, t *tracked) {
 	if s.stopped || t.launching || ctx.Err() != nil {
 		return
 	}
 	t.launching = true
-	go s.finishLaunch(ctx, sessionID, t)
+	done := make(chan struct{})
+	t.launchDone = done
+	go s.finishLaunch(ctx, sessionID, t, done)
 }
 
-func (s *Supervisor) finishLaunch(ctx context.Context, sessionID uint32, t *tracked) {
+func (s *Supervisor) finishLaunch(ctx context.Context, sessionID uint32, t *tracked, done chan struct{}) {
+	defer func() {
+		s.mu.Lock()
+		t.launching = false
+		if t.launchDone == done {
+			t.launchDone = nil
+		}
+		s.mu.Unlock()
+		close(done)
+	}()
+
 	child, err := s.Launcher.Launch(ctx, sessionID)
+	detach := context.WithoutCancel(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t.launching = false
 
 	if s.stopped {
-		if child != nil {
-			_ = child.Terminate()
-			waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_ = child.Wait(waitCtx)
-			cancel()
-			_ = child.Close()
-		}
+		s.reapChildLocked(detach, child)
 		return
 	}
 	if err != nil {
@@ -310,15 +319,26 @@ func (s *Supervisor) finishLaunch(ctx context.Context, sessionID uint32, t *trac
 		return
 	}
 	if s.children[sessionID] != t {
-		_ = child.Terminate()
-		_ = child.Close()
+		s.reapChildLocked(detach, child)
 		return
 	}
 	t.child = child
 	t.backoff.onLaunched(s.Clock.Now())
-	watchCtx, cancel := context.WithCancel(context.Background())
+	watchCtx, cancel := context.WithCancel(detach)
 	t.watchCancel = cancel
 	go s.watchChild(watchCtx, sessionID, child)
+}
+
+// reapChildLocked terminates, waits briefly, and closes child. Caller holds s.mu.
+func (s *Supervisor) reapChildLocked(detach context.Context, child Child) {
+	if child == nil {
+		return
+	}
+	_ = child.Terminate()
+	waitCtx, cancel := context.WithTimeout(detach, 2*time.Second)
+	_ = child.Wait(waitCtx)
+	cancel()
+	_ = child.Close()
 }
 
 func (s *Supervisor) scheduleRetryLocked(ctx context.Context, sessionID uint32, delay time.Duration) {
@@ -384,9 +404,17 @@ func (s *Supervisor) onChildExit(sessionID uint32, child Child) {
 	if err := s.Sink.EnqueueRestarted(sessionID); err != nil {
 		s.Log.Log("sessionagent: enqueue session.restarted: %v", err)
 	}
+	runCtx := s.runCtx
+	if runCtx == nil || runCtx.Err() != nil {
+		return
+	}
 	go func() {
 		timer := s.Clock.After(delay)
-		<-timer
+		select {
+		case <-runCtx.Done():
+			return
+		case <-timer:
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.stopped {
@@ -396,7 +424,7 @@ func (s *Supervisor) onChildExit(sessionID uint32, child Child) {
 		if t == nil || t.child != nil || t.launching {
 			return
 		}
-		s.launchLocked(context.Background(), sessionID, t)
+		s.launchLocked(runCtx, sessionID, t)
 	}()
 }
 
@@ -417,11 +445,11 @@ func (s *Supervisor) stopTrackedLocked(sessionID uint32, t *tracked) {
 		t.watchCancel = nil
 	}
 	if t.child != nil {
-		_ = t.child.Terminate()
-		waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = t.child.Wait(waitCtx)
-		cancel()
-		_ = t.child.Close()
+		detach := context.Background()
+		if s.runCtx != nil {
+			detach = context.WithoutCancel(s.runCtx)
+		}
+		s.reapChildLocked(detach, t.child)
 		t.child = nil
 	}
 	delete(s.children, sessionID)
@@ -431,10 +459,14 @@ func (s *Supervisor) shutdown(parent context.Context) {
 	s.mu.Lock()
 	s.stopped = true
 	budget := s.StopBudget
-	children := make([]*tracked, 0, len(s.children))
+	type snap struct {
+		t    *tracked
+		done <-chan struct{}
+	}
+	snaps := make([]snap, 0, len(s.children))
 	for id, t := range s.children {
 		t.backoff.expectRestart = false
-		children = append(children, t)
+		snaps = append(snaps, snap{t: t, done: t.launchDone})
 		delete(s.children, id)
 	}
 	s.mu.Unlock()
@@ -443,7 +475,31 @@ func (s *Supervisor) shutdown(parent context.Context) {
 	if dl, ok := parent.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
-	for _, t := range children {
+	detach := context.WithoutCancel(parent)
+
+	// Join in-flight Launch/CreateProcessAsUser so late children are reaped
+	// before Run returns (bounded by StopBudget).
+	for _, sn := range snaps {
+		if sn.done == nil {
+			continue
+		}
+		remain := deadline.Sub(s.Clock.Now())
+		if remain < 0 {
+			remain = 0
+		}
+		timer := time.NewTimer(remain)
+		select {
+		case <-sn.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			// Launch wedged past budget; finishLaunch still reaps when it returns.
+		}
+	}
+
+	for _, sn := range snaps {
+		t := sn.t
 		if t.watchCancel != nil {
 			t.watchCancel()
 		}
@@ -452,7 +508,8 @@ func (s *Supervisor) shutdown(parent context.Context) {
 		}
 		_ = t.child.Terminate()
 	}
-	for _, t := range children {
+	for _, sn := range snaps {
+		t := sn.t
 		if t.child == nil {
 			continue
 		}
@@ -460,7 +517,7 @@ func (s *Supervisor) shutdown(parent context.Context) {
 		if remain < 0 {
 			remain = 0
 		}
-		waitCtx, cancel := context.WithTimeout(context.Background(), remain)
+		waitCtx, cancel := context.WithTimeout(detach, remain)
 		_ = t.child.Wait(waitCtx)
 		cancel()
 		_ = t.child.Close()

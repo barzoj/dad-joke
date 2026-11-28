@@ -41,13 +41,21 @@ func (l *platformLauncher) Launch(ctx context.Context, sessionID uint32) (Child,
 	// hold handles for (opened fresh — never trust a stale remembered PID).
 	_ = terminateOrphans(sessionID, l.exePath)
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	tok, err := QueryUserToken(sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer windows.Token(tok).Close()
 
-	return CreateProcessAsUser(tok, l.exePath, []string{l.exePath, "session"}, sessionID)
+	// Last chance to skip CreateProcessAsUser after cancel (service stop).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	child, err := CreateProcessAsUser(tok, l.exePath, []string{l.exePath, "session"}, sessionID)
+	return FinalizeLaunch(ctx, child, err)
 }
 
 // QueryUserToken wraps WTSQueryUserToken for sessionID.
