@@ -9,7 +9,7 @@ The Windows agent is a **two-process** design: a **Windows Service under `LocalS
 - A compromised **update channel** that can push an unverified binary can take over every enrolled machine.
 - A compromised **control plane** that can issue unconstrained remote jobs or policies can turn the fleet into a botnet.
 
-The session agent runs as the **logged-on user**, so the service treats it as **untrusted**: it receives no agent token, backend URL, or ProgramData secrets, and nothing it sends later (IPC) must be trusted without validation. A user can kill their session agent; the service respawns it and records `session.restarted` (gaps are visible — never fabricated).
+The session agent runs as the **logged-on user**, so the service treats it as **untrusted**: it receives no agent token, backend URL, or ProgramData secrets, and nothing it sends over IPC must be trusted without validation (sizes, ranges, UTF-8). The named-pipe ACL allows only `SYSTEM` and that session’s user SID; after connect the service also checks client PID and session id against the process it launched. A user can kill their session agent; the service respawns it and records `session.restarted` (gaps are visible — never fabricated). Other processes of the same user can attempt the pipe, but a PID mismatch is refused without reading frames.
 
 Therefore the product assumes the network and backends are hostile unless cryptographic and authorization checks succeed. Least privilege, short TTLs, strict isolation, and fail-closed verification are mandatory—not optional hardening.
 
@@ -51,7 +51,7 @@ Rules that bind every implementation of these contracts:
 These controls exist in the current Windows agent / repository:
 
 - **LocalSystem service + ACL hardening** — install tree and `ProgramData` config allow `SYSTEM` and `Administrators` only. The durable facts queue at `C:\ProgramData\DadJoke\facts\` (batch files, `state.json`, `rejected\`) uses the same `SYSTEM` + `Administrators` ACL; a Standard User cannot read, write, or delete queue files.
-- **Session agent isolation** — `dad-joke.exe session` runs as the user (no elevation); command line and environment carry no token/URL/`DAD_JOKE_*` secrets; it does not open `config.json`. The service owns child process handles for terminate/relaunch.
+- **Session agent isolation** — `dad-joke.exe session` runs as the user (no elevation); command line and environment carry no token/URL/`DAD_JOKE_*` secrets; it does not open `config.json`. The service owns child process handles for terminate/relaunch. IPC (`internal/ipc`, `ProtocolVersion` = 1) carries no secrets; pipe DACL is `SYSTEM` + session user only; client PID/session verified after connect.
 - **Local identity secrecy** — `machine_id` + install `token` in `C:\ProgramData\DadJoke\config.json`; raw token must not appear in service logs, error strings, updater / GitHub Releases HTTP, or facts-uploader logs.
 - **AgentAPI heartbeat / facts transport** — optional `backend_url` uses system CA TLS (≥1.2); cleartext only for loopback; redirects strip `Authorization` on host change; heartbeat and facts-upload failures never take down the service, updater, or sampler. Facts batches retry with identical bytes for `(stream_id, seq)` idempotency; `401`/`403` retain the batch and back off without logging the token.
 - **HTTPS download policy** — release API and asset URLs must be HTTPS (loopback HTTP only for local tests); redirects are re-validated.

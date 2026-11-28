@@ -12,7 +12,9 @@ param(
     [string]$Version = "0.0.1-dev",
     [string]$Commit = "",
     [string]$Output = "dad-joke.exe",
-    [string]$ReleaseAPIURL = "https://api.github.com/repos/barzoj/dad-joke/releases/latest"
+    [string]$ReleaseAPIURL = "https://api.github.com/repos/barzoj/dad-joke/releases/latest",
+    # Optional build tags (e.g. e2ediag for Windows E2E IPC diagnostics).
+    [string]$Tags = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,8 +47,14 @@ $env:CGO_ENABLED = "0"
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
 
-Write-Host "Building $Output (Version=$Version Commit=$Commit)"
-& go build -trimpath -ldflags $ldflags -o $Output ./cmd/dad-joke
+$tagArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($Tags)) {
+    $tagArgs = @("-tags", $Tags)
+    Write-Host "Building $Output (Version=$Version Commit=$Commit Tags=$Tags)"
+} else {
+    Write-Host "Building $Output (Version=$Version Commit=$Commit)"
+}
+& go build -trimpath -ldflags $ldflags @tagArgs -o $Output ./cmd/dad-joke
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

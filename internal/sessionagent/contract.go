@@ -1,5 +1,5 @@
 // Package sessionagent implements the session-agent process and its service
-// supervisor (T-21).
+// supervisor (T-21) plus versioned IPC to the service (T-22).
 //
 // # Contract session-agent/v1
 //
@@ -7,7 +7,9 @@
 //
 //  1. Session agent (`dad-joke.exe session`): runs in an interactive user
 //     session. Takes no secrets, no agent token, no backend URL, no network.
-//     Does not read config.json or ProgramData. Blocks until context cancel.
+//     Does not read config.json or ProgramData. Connects to the service over
+//     the versioned named-pipe IPC (`internal/ipc`, ProtocolVersion=1) and
+//     blocks until context cancel.
 //
 //  2. Supervisor (`Supervisor`, a service.Agent): runs in the Windows Service
 //     (Session 0, LocalSystem). Desired state = exactly one session agent per
@@ -16,9 +18,13 @@
 //     process handle the service created — never a remembered PID.
 //     Relaunch-cap reset events: PowerResume, SessionLogon, ConsoleConnect,
 //     RemoteConnect. Lock/Unlock/Disconnect do not clear the cap.
+//     Per session the supervisor listens on `\\.\pipe\DadJoke.session.<id>`,
+//     verifies the client PID/session, and exposes Connected(sessionID).
+//     IPC disconnect does not restart the child; process exit does.
 //
 // OS calls stay behind winsess.Launcher and SessionSource. Fact markers
-// (`session.restarted`) go through RestartSink.
+// (`session.restarted`) go through RestartSink. IPC framing/handshake live in
+// `internal/ipc`.
 package sessionagent
 
 import (
@@ -32,6 +38,7 @@ import (
 type Session struct {
 	ID       uint32
 	UserName string
+	UserSID  string
 }
 
 // SessionSource enumerates interactive sessions (excludes session 0).
