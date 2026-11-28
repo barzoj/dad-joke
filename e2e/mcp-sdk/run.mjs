@@ -148,6 +148,8 @@ async function main() {
         hostname: "mcp-sdk-e2e",
         os_version: "linux",
         applied_policy_version: 0,
+        time_zone: "UTC",
+        utc_offset_minutes: 0,
       },
       agentTok,
     );

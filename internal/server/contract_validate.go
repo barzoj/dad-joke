@@ -37,7 +37,7 @@ func validateMachineTimeZone(timeZone string, utcOffsetMinutes int32) error {
 
 // validateUsageDate rejects missing/empty plainDate query values (Bind accepts "").
 func validateUsageDate(date openapi_types.Date) error {
-	if date.Time.IsZero() {
+	if date.IsZero() {
 		return fmt.Errorf("date is required")
 	}
 	return nil
