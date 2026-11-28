@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/barzoj/dad-joke/internal/ipc"
 	"golang.org/x/sys/windows"
@@ -294,21 +295,53 @@ func spoofHello(t *testing.T, pipeName string, sessionID, fakePID uint32) {
 
 func assertPipeACL(t *testing.T, pipeName string, sessionAgentPID int) {
 	t.Helper()
-	sd, err := windows.GetNamedSecurityInfo(
-		pipeName,
-		windows.SE_KERNEL_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
+	// GetNamedSecurityInfo on a connected single-instance pipe fails with
+	// ERROR_PIPE_BUSY. Drop the agent so the service recreates a listening
+	// instance, then open with READ_CONTROL and query the handle SD.
+	path, err := windows.UTF16PtrFromString(pipeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		h       windows.Handle
+		lastErr error
+		sd      *windows.SECURITY_DESCRIPTOR
 	)
-	if err != nil {
-		sd, err = windows.GetNamedSecurityInfo(
-			pipeName,
-			windows.SE_FILE_OBJECT,
-			windows.DACL_SECURITY_INFORMATION,
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		writeIPCControl(t, map[string]any{"action": "drop"})
+		waitIPCStat(t, func(s ipcStatus) bool {
+			return !anyConnected(s)
+		}, 10*time.Second, "drop before pipe ACL probe")
+
+		_ = waitNamedPipe(pipeName, 2000)
+		h, lastErr = windows.CreateFile(
+			path,
+			windows.READ_CONTROL,
+			0,
+			nil,
+			windows.OPEN_EXISTING,
+			windows.FILE_ATTRIBUTE_NORMAL,
+			0,
 		)
+		if lastErr == nil {
+			sd, err = windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				sd, err = windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			}
+			_ = windows.CloseHandle(h)
+			if err == nil {
+				break
+			}
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pipe ACL open/query %s: %v", pipeName, lastErr)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if err != nil {
-		t.Fatalf("GetNamedSecurityInfo(%s): %v", pipeName, err)
-	}
+
 	sddl := sd.String()
 	up := strings.ToUpper(sddl)
 	if !strings.Contains(up, "SY") {
@@ -327,7 +360,25 @@ func assertPipeACL(t *testing.T, pipeName string, sessionAgentPID int) {
 	if owner != "" && !strings.Contains(strings.ToUpper(sddl), strings.ToUpper(owner)) {
 		t.Fatalf("pipe ACL missing session user SID %s: %s", owner, sddl)
 	}
+
+	// Probe consumed the listen instance (refused as wrong PID); agent must reconnect.
+	waitIPCConnected(t, 45*time.Second)
 }
+
+// waitNamedPipe wraps WaitNamedPipeW (not exported by x/sys).
+func waitNamedPipe(name string, timeoutMs uint32) error {
+	p, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	r1, _, e1 := procWaitNamedPipeW.Call(uintptr(unsafe.Pointer(p)), uintptr(timeoutMs))
+	if r1 == 0 {
+		return e1
+	}
+	return nil
+}
+
+var procWaitNamedPipeW = windows.NewLazySystemDLL("kernel32.dll").NewProc("WaitNamedPipeW")
 
 func processOwnerSID(pid uint32) (string, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, pid)

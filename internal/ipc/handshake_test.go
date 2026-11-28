@@ -83,7 +83,9 @@ func TestHandshakeVersionMismatch(t *testing.T) {
 			t.Fatalf("ver=%d %+v", ver, rej)
 		}
 		closeQuiet(cli)
-		<-done
+		if err := <-done; err == nil {
+			t.Fatalf("ver=%d: expected ServeConn error on version mismatch", ver)
+		}
 		if stats.VersionMismatch.Load() == 0 {
 			t.Fatalf("ver=%d no mismatch counter", ver)
 		}
@@ -140,7 +142,9 @@ func TestDuplicateHello(t *testing.T) {
 	if rej.Code != RejectDuplicateHello {
 		t.Fatalf("%+v", rej)
 	}
-	<-done
+	if err := <-done; err == nil {
+		t.Fatal("expected ServeConn error on duplicate hello")
+	}
 	if stats.DuplicateHello.Load() != 1 {
 		t.Fatalf("dup=%d", stats.DuplicateHello.Load())
 	}
@@ -163,7 +167,9 @@ func TestMessageBeforeHello(t *testing.T) {
 	if rej.Type != TypeReject {
 		t.Fatalf("%+v", rej)
 	}
-	<-done
+	if err := <-done; err == nil {
+		t.Fatal("expected ServeConn error when message precedes hello")
+	}
 	closeQuiet(srv)
 }
 
@@ -199,7 +205,9 @@ func TestUnknownTypeIgnored(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 	closeQuiet(cli)
-	<-done
+	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("serve after unknown type: %v", err)
+	}
 	if stats.UnknownType.Load() != 1 {
 		t.Fatalf("unknown=%d", stats.UnknownType.Load())
 	}
@@ -241,7 +249,9 @@ func TestPingPong(t *testing.T) {
 		t.Fatalf("%+v %v", pong, err)
 	}
 	closeQuiet(cli)
-	<-done
+	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("serve after ping/pong: %v", err)
+	}
 	closeQuiet(srv)
 }
 
@@ -404,7 +414,9 @@ func TestSquatterListenRejected(t *testing.T) {
 		t.Fatal("Connected() true while pipe name is squatted")
 	}
 	cancel()
-	<-errCh
+	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("SessionServer.Run after cancel: %v", err)
+	}
 }
 
 func TestVerifyClient(t *testing.T) {
