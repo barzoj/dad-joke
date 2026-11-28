@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -381,6 +382,82 @@ func TestUpload401RetainsAndBacksOff(t *testing.T) {
 	}
 }
 
+func TestUpload403RetainsAndBacksOff(t *testing.T) {
+	t.Parallel()
+	cfg := testCfg("http://127.0.0.1:9")
+	q := &memQueue{}
+	q.push(1, []byte(`{"seq":1}`))
+	clock := newRecordingClock(time.Now())
+	doer := &captureDoer{
+		handler: func(*http.Request, int) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(strings.NewReader(`{"error":"forbidden"}`)),
+				Header:     make(http.Header),
+			}, nil
+		},
+	}
+	logs := &logBuf{}
+	loop := &Loop{
+		Config: &cfg,
+		Queue:  q,
+		Log:    logs,
+		Clock:  clock,
+		NewHTTP: func(string) (HTTPDoer, error) {
+			return doer, nil
+		},
+	}
+	cancel, done := runUntil(t, loop, func() bool {
+		return doer.callCount() >= 2 && len(clock.afterDurations()) >= 1
+	}, 3*time.Second)
+	waitDone(t, done, cancel)
+
+	if q.ackCount() != 0 || q.rejectCount() != 0 {
+		t.Fatalf("acks=%d rejects=%d (batch must be retained)", q.ackCount(), q.rejectCount())
+	}
+	if q.pending() != 1 {
+		t.Fatalf("pending = %d, want 1", q.pending())
+	}
+	if !strings.Contains(logs.joined(), "auth failed") {
+		t.Fatalf("expected auth log: %s", logs.joined())
+	}
+}
+
+func TestNextBackoffGrowthCapAndJitter(t *testing.T) {
+	t.Parallel()
+	loop := &Loop{rng: rand.New(rand.NewSource(1))} // #nosec G404 -- deterministic test
+	var seen []time.Duration
+	for i := 0; i < 20; i++ {
+		d := loop.nextBackoff()
+		seen = append(seen, d)
+		if d < 0 || d > maxBackoff {
+			t.Fatalf("jitter %v out of [0, %v]", d, maxBackoff)
+		}
+		if loop.backoff > maxBackoff {
+			t.Fatalf("backoff field %v > max %v", loop.backoff, maxBackoff)
+		}
+	}
+	if loop.backoff != maxBackoff {
+		t.Fatalf("after many doublings backoff = %v, want cap %v", loop.backoff, maxBackoff)
+	}
+	// Growth path: after first call backoff is base; after enough calls it hits 5m.
+	growth := &Loop{rng: rand.New(rand.NewSource(2))} // #nosec G404
+	_ = growth.nextBackoff()
+	if growth.backoff != baseBackoff {
+		t.Fatalf("first backoff field = %v, want %v", growth.backoff, baseBackoff)
+	}
+	_ = growth.nextBackoff()
+	if growth.backoff != 2*baseBackoff {
+		t.Fatalf("second backoff field = %v, want %v", growth.backoff, 2*baseBackoff)
+	}
+	// Nil rng → jitter always 0 (still advances internal backoff).
+	noJitter := &Loop{}
+	if d := noJitter.nextBackoff(); d != 0 {
+		t.Fatalf("nil rng jitter = %v, want 0", d)
+	}
+	_ = seen
+}
+
 func TestUpload413Rejects(t *testing.T) {
 	t.Parallel()
 	cfg := testCfg("http://127.0.0.1:9")
@@ -592,7 +669,10 @@ func TestUploadOnlyOneInFlight(t *testing.T) {
 	close(release)
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout")
 	}

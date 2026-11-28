@@ -36,6 +36,9 @@ type Queue struct {
 	Dir string
 	Cap int64 // bytes; 0 → DefaultCapBytes
 
+	// FS abstracts disk I/O; nil uses OSFS. Tests inject ENOSPC / read-only.
+	FS FS
+
 	// ApplyACL sets SYSTEM+Administrators ACL; nil uses acl.Apply.
 	ApplyACL func(path string) error
 
@@ -71,10 +74,10 @@ func (q *Queue) openLocked() error {
 	if q.ApplyACL == nil {
 		q.ApplyACL = acl.Apply
 	}
-	if err := os.MkdirAll(q.Dir, 0o700); err != nil {
+	if err := q.fs().MkdirAll(q.Dir, 0o700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(q.rejectedDir(), 0o700); err != nil {
+	if err := q.fs().MkdirAll(q.rejectedDir(), 0o700); err != nil {
 		return err
 	}
 	_ = q.ApplyACL(q.Dir)
@@ -148,7 +151,7 @@ func (q *Queue) EnqueueBuild(build func(streamID string, seq int64, dropped Drop
 		}
 		if total+int64(len(data)) <= q.Cap {
 			path := q.batchPath(seq)
-			if err := atomicWriteFile(path, data, q.ApplyACL); err != nil {
+			if err := q.writeAtomic(path, data); err != nil {
 				return 0, dropped, err
 			}
 			q.nextSeq = seq + 1
@@ -169,17 +172,6 @@ func (q *Queue) EnqueueBuild(build func(streamID string, seq int64, dropped Drop
 	}
 }
 
-// Rewrite replaces an existing batch file's bytes (same seq). Used when a
-// producer must correct the payload after assignment; prefer EnqueueBuild.
-func (q *Queue) Rewrite(seq int64, data []byte) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if err := q.openLocked(); err != nil {
-		return err
-	}
-	return atomicWriteFile(q.batchPath(seq), data, q.ApplyACL)
-}
-
 // Peek returns the oldest pending batch bytes and seq without removing it.
 // ok is false when the queue is empty.
 func (q *Queue) Peek() (seq int64, data []byte, ok bool, err error) {
@@ -198,7 +190,7 @@ func (q *Queue) Peek() (seq int64, data []byte, ok bool, err error) {
 		}
 		seq = seqs[0]
 		path := q.batchPath(seq)
-		data, err = os.ReadFile(path) // #nosec G304 -- path under controlled Dir
+		data, err = q.fs().ReadFile(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				seqs = seqs[1:]
@@ -223,7 +215,7 @@ func (q *Queue) Ack(seq int64) error {
 		return err
 	}
 	path := q.batchPath(seq)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := q.fs().Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -241,21 +233,23 @@ func (q *Queue) Reject(seq int64) error {
 
 func (q *Queue) quarantineLocked(seq int64, path string) error {
 	dest := filepath.Join(q.rejectedDir(), fmt.Sprintf("%d.json", seq))
-	if err := os.Rename(path, dest); err != nil {
+	if err := q.fs().Rename(path, dest); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		// Cross-device or existing dest: copy+remove best effort.
-		data, rerr := os.ReadFile(path) // #nosec G304
+		data, rerr := q.fs().ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}
-		if werr := atomicWriteFile(dest, data, q.ApplyACL); werr != nil {
+		if werr := q.writeAtomic(dest, data); werr != nil {
 			return werr
 		}
-		_ = os.Remove(path)
+		_ = q.fs().Remove(path)
 	}
-	_ = q.ApplyACL(dest)
+	if q.ApplyACL != nil {
+		_ = q.ApplyACL(dest)
+	}
 	return nil
 }
 
@@ -271,7 +265,7 @@ func (q *Queue) recoverState() (streamID string, nextSeq int64, err error) {
 			highest = seq
 		}
 		if streamFromBatch == "" {
-			if id := readStreamID(q.batchPath(seq)); id != "" {
+			if id := q.readStreamID(q.batchPath(seq)); id != "" {
 				streamFromBatch = id
 			}
 		}
@@ -306,7 +300,7 @@ func (q *Queue) recoverState() (streamID string, nextSeq int64, err error) {
 }
 
 func (q *Queue) readStateFile() (stateFile, bool) {
-	raw, err := os.ReadFile(q.statePath()) // #nosec G304
+	raw, err := q.fs().ReadFile(q.statePath())
 	if err != nil {
 		return stateFile{}, false
 	}
@@ -326,11 +320,11 @@ func (q *Queue) writeStateLocked() error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(q.statePath(), raw, q.ApplyACL)
+	return q.writeAtomic(q.statePath(), raw)
 }
 
 func (q *Queue) listBatchSeqsLocked() ([]int64, error) {
-	entries, err := os.ReadDir(q.Dir)
+	entries, err := q.fs().ReadDir(q.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +354,7 @@ func (q *Queue) sizeLocked() (int64, error) {
 	}
 	var total int64
 	for _, seq := range seqs {
-		fi, err := os.Stat(q.batchPath(seq))
+		fi, err := q.fs().Stat(q.batchPath(seq))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -382,19 +376,19 @@ func (q *Queue) dropOldestLocked() (Dropped, error) {
 	}
 	seq := seqs[0]
 	path := q.batchPath(seq)
-	fi, err := os.Stat(path)
+	fi, err := q.fs().Stat(path)
 	var size int64
 	if err == nil {
 		size = fi.Size()
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := q.fs().Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Dropped{}, err
 	}
 	return Dropped{Batches: 1, Bytes: size}, nil
 }
 
-func readStreamID(path string) string {
-	raw, err := os.ReadFile(path) // #nosec G304
+func (q *Queue) readStreamID(path string) string {
+	raw, err := q.fs().ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -405,43 +399,6 @@ func readStreamID(path string) string {
 		return ""
 	}
 	return meta.StreamID
-}
-
-func atomicWriteFile(path string, data []byte, applyACL func(string) error) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	cleanup = false
-	if applyACL != nil {
-		_ = applyACL(path)
-	}
-	return nil
 }
 
 // SizeBytes returns the total size of pending batch files (tests / diagnostics).

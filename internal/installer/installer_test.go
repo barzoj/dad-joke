@@ -433,6 +433,9 @@ func TestReconcileConfigPreservesOnReinstall(t *testing.T) {
 	if cfg.BackendURL != existing.BackendURL || cfg.HeartbeatIntervalSeconds != existing.HeartbeatIntervalSeconds {
 		t.Fatalf("backend settings not preserved: %+v", cfg)
 	}
+	if cfg.SampleIntervalSeconds != existing.SampleIntervalSeconds {
+		t.Fatalf("SampleIntervalSeconds not preserved: got %d want %d", cfg.SampleIntervalSeconds, existing.SampleIntervalSeconds)
+	}
 }
 
 func TestReconcileConfigSetsBackendURLFlag(t *testing.T) {

@@ -224,22 +224,18 @@ if ($r) { 'present' } else { 'absent' }
 	waitPathAbsent(t, dataDir, 30*time.Second)
 }
 
-// TestTC02_StandardUserCannotTamper covers Issue #2 TC-02.
-func TestTC02_StandardUserCannotTamper(t *testing.T) {
-	bin := testBinary(t)
-	cleanupInstall(t, bin)
-
-	user := "djtest_" + randomSuffix(4)
-	pass := "Dj!" + randomSuffix(8) + "aA1"
-
-	// net user /add creates a Standard User (Users group only). Do not fail if
-	// removing from Administrators returns error 1377 (not a member).
+// createStandardUser creates a local Standard User with a ≤14-char password
+// (net user /add prompts interactively above 14). Returns user and password.
+func createStandardUser(t *testing.T, namePrefix string) (user, pass string) {
+	t.Helper()
+	user = namePrefix + randomSuffix(4)
+	// Dj! + 8 hex + aA1 = 14 chars — avoids net user Y/N prompt on long passwords.
+	pass = "Dj!" + randomSuffix(8) + "aA1"
 	createOut, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 net user %s %s /add | Out-Null
 $ErrorActionPreference = 'Continue'
 net localgroup Administrators %s /delete 2>&1 | Out-Null
-# Confirm not in Administrators
 $admins = net localgroup Administrators
 if ($admins -match ('(?i)^\s*' + [regex]::Escape('%s') + '\s*$')) {
   throw 'user unexpectedly in Administrators'
@@ -251,8 +247,17 @@ Write-Output 'ok'
 	}
 	t.Cleanup(func() {
 		_, _ = powershell(t, fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'; net user %s /delete`, user))
-		cleanupInstall(t, bin)
 	})
+	return user, pass
+}
+
+// TestTC02_StandardUserCannotTamper covers Issue #2 TC-02.
+func TestTC02_StandardUserCannotTamper(t *testing.T) {
+	bin := testBinary(t)
+	cleanupInstall(t, bin)
+
+	user, pass := createStandardUser(t, "djtest_")
+	t.Cleanup(func() { cleanupInstall(t, bin) })
 
 	pinNoSelfUpdate(t)
 	out, err := runAdmin(t, bin, "install")

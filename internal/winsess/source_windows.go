@@ -4,7 +4,6 @@ package winsess
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"unsafe"
@@ -25,34 +24,14 @@ const (
 	wtsDown                = 8
 	wtsInit                = 9
 
-	wtsUserName          = 5
-	wtsSessionInfo       = 24
-	wtsConnectStateClass = 14
+	wtsUserName      = 5
+	wtsSessionInfoEx = 25
 )
 
 type wtsSessionInfoW struct {
 	SessionID      uint32
 	WinStationName *uint16
 	State          uint32
-}
-
-type wtsInfoW struct {
-	State                   uint32
-	SessionId               uint32
-	IncomingBytes           uint32
-	OutgoingBytes           uint32
-	IncomingFrames          uint32
-	OutgoingFrames          uint32
-	IncomingCompressedBytes uint32
-	OutgoingCompressedBytes uint32
-	WinStationName          [32]uint16
-	Domain                  [17]uint16
-	UserName                [21]uint16
-	ConnectTime             int64
-	DisconnectTime          int64
-	LastInputTime           int64
-	LogonTime               int64
-	CurrentTime             int64
 }
 
 var (
@@ -138,12 +117,6 @@ func (platformSource) Processes(ctx context.Context) ([]Process, error) {
 	return out, nil
 }
 
-const (
-	wtsSessionInfoEx     = 25
-	wtsSessionStateLock  = 0x00000000
-	wtsSessionStateUnlock = 0x00000001
-)
-
 func mapWTSState(sessionID, connectState uint32) State {
 	switch connectState {
 	case wtsDisconnected:
@@ -165,26 +138,21 @@ func mapWTSState(sessionID, connectState uint32) State {
 
 func sessionLocked(sessionID uint32) bool {
 	var buf *byte
-	var bytes uint32
+	var nbytes uint32
 	r1, _, _ := procWTSQuerySessionInformationW.Call(
 		wtsCurrentServerHandle,
 		uintptr(sessionID),
 		uintptr(wtsSessionInfoEx),
 		uintptr(unsafe.Pointer(&buf)),
-		uintptr(unsafe.Pointer(&bytes)),
+		uintptr(unsafe.Pointer(&nbytes)),
 	)
-	if r1 == 0 || buf == nil || bytes < 16 {
+	if r1 == 0 || buf == nil || int(nbytes) < minInfoExBytes {
 		return false
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
-	// WTSINFOEX: Level (uint32) then LEVEL1 SessionId, SessionState, SessionFlags.
-	raw := unsafe.Slice(buf, bytes)
-	level := binary.LittleEndian.Uint32(raw[0:4])
-	if level != 1 {
-		return false
-	}
-	flags := binary.LittleEndian.Uint32(raw[12:16])
-	return flags == wtsSessionStateLock
+	raw := unsafe.Slice(buf, nbytes)
+	locked, ok := parseSessionLockedFromInfoEx(raw)
+	return ok && locked
 }
 
 func queryUser(sessionID uint32) (userName, userSID string) {

@@ -137,7 +137,12 @@ func (s *Sensor) nextDur(now time.Time) int32 {
 	if intervalSec < 1 {
 		intervalSec = 1
 	}
+	// Contract FactDurMaxSeconds = 300; never emit dur_s above that or the
+	// backend 400s the whole batch into rejected/.
 	maxDur := intervalSec * 2
+	if maxDur > 300 {
+		maxDur = 300
+	}
 	if s.prevSample.IsZero() {
 		s.prevSample = now
 		return intervalSec
@@ -156,7 +161,7 @@ func (s *Sensor) nextDur(now time.Time) int32 {
 	if sec64 > int64(maxDur) {
 		sec64 = int64(maxDur)
 	}
-	return int32(sec64) // #nosec G115 -- clamped to maxDur (≤600) above
+	return int32(sec64) // #nosec G115 -- clamped to maxDur (≤300) above
 }
 
 func indexUserProcs(procs []winsess.Process) map[string][]string {

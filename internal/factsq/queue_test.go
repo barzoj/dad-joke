@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -383,28 +384,6 @@ func TestCapOverflowDropsOldestAndErrFull(t *testing.T) {
 	})
 }
 
-func TestRewrite(t *testing.T) {
-	t.Parallel()
-	q := testQueue(t, 1<<20)
-	stream := q.StreamID()
-	orig := batchJSON(stream, 1, "orig")
-	seq, _, err := q.Enqueue(orig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated := batchJSON(stream, seq, "rewritten")
-	if err := q.Rewrite(seq, updated); err != nil {
-		t.Fatal(err)
-	}
-	gotSeq, data, ok, err := q.Peek()
-	if err != nil || !ok || gotSeq != seq {
-		t.Fatalf("Peek = %d ok=%v err=%v", gotSeq, ok, err)
-	}
-	if !bytes.Equal(data, updated) {
-		t.Fatalf("data = %s, want %s", data, updated)
-	}
-}
-
 func TestConcurrentEnqueuePeekAck(t *testing.T) {
 	t.Parallel()
 	q := testQueue(t, 4<<20)
@@ -497,5 +476,88 @@ func TestOpenEmptyDirMintsStream(t *testing.T) {
 	}
 	if q.NextSeq() != 1 {
 		t.Fatalf("NextSeq = %d, want 1", q.NextSeq())
+	}
+}
+
+// failCreateTempFS returns err from CreateTemp (used for ENOSPC / EACCES injection).
+type failCreateTempFS struct {
+	OSFS
+	err   error
+	armed bool
+}
+
+func (f *failCreateTempFS) CreateTemp(dir, pattern string) (*os.File, error) {
+	if f.armed {
+		return nil, f.err
+	}
+	return f.OSFS.CreateTemp(dir, pattern)
+}
+
+func TestEnqueueENOSPCPreservesExisting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	failFS := &failCreateTempFS{}
+	q := &Queue{Dir: dir, Cap: 1 << 20, ApplyACL: nopACL, FS: failFS}
+	if err := q.Open(); err != nil {
+		t.Fatal(err)
+	}
+	stream := q.StreamID()
+	first := batchJSON(stream, 1, "keep-me")
+	if _, _, err := q.Enqueue(first); err != nil {
+		t.Fatal(err)
+	}
+	failFS.armed = true
+	failFS.err = errors.New("no space left on device")
+	_, _, err := q.Enqueue(batchJSON(stream, 2, "new"))
+	if err == nil {
+		t.Fatal("expected ENOSPC-style enqueue error")
+	}
+	if !strings.Contains(err.Error(), "no space left on device") {
+		t.Fatalf("err = %v", err)
+	}
+	failFS.armed = false
+	seq, data, ok, err := q.Peek()
+	if err != nil || !ok || seq != 1 {
+		t.Fatalf("Peek = seq=%d ok=%v err=%v", seq, ok, err)
+	}
+	if !bytes.Equal(data, first) {
+		t.Fatalf("existing batch corrupted: %s", data)
+	}
+	pending, err := q.PendingSeqs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0] != 1 {
+		t.Fatalf("PendingSeqs = %v, want [1]", pending)
+	}
+}
+
+func TestEnqueueReadOnlyDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	q := &Queue{Dir: dir, Cap: 1 << 20, ApplyACL: nopACL}
+	if err := q.Open(); err != nil {
+		t.Fatal(err)
+	}
+	stream := q.StreamID()
+	if _, _, err := q.Enqueue(batchJSON(stream, 1, "before-ro")); err != nil {
+		t.Fatal(err)
+	}
+	// Make the queue dir non-writable (temp create fails).
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	_, _, err := q.Enqueue(batchJSON(stream, 2, "after-ro"))
+	if err == nil {
+		t.Fatal("expected enqueue error on read-only directory")
+	}
+	pending, err := q.PendingSeqs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0] != 1 {
+		t.Fatalf("PendingSeqs = %v, want [1] (existing intact)", pending)
 	}
 }

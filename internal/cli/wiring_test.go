@@ -34,6 +34,26 @@ func TestInstallParsesSampleInterval(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentGroupHasSamplerAndUploader(t *testing.T) {
+	t.Parallel()
+	g := DefaultAgentGroup()
+	if len(g) < 5 {
+		t.Fatalf("DefaultAgentGroup len=%d, want ≥5 (updater,heartbeat,jobs,sampler,factsup)", len(g))
+	}
+	var sawSampler, sawUploader bool
+	for _, a := range g {
+		switch a.(type) {
+		case *sampler.Loop:
+			sawSampler = true
+		case *factsup.Loop:
+			sawUploader = true
+		}
+	}
+	if !sawSampler || !sawUploader {
+		t.Fatalf("sampler=%v uploader=%v", sawSampler, sawUploader)
+	}
+}
+
 func TestGroupContainsSamplerAndUploader(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

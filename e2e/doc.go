@@ -8,5 +8,6 @@
 // Issue #10: TC-10 heartbeat to local AgentAPI + non-HTTPS external URL rejection.
 // Issue #14: TC-14 job claim/execute/result, timeout kill, truncation, isolation, audit ACL.
 // Issue #16: TC-16 Restart-Service config+token persistence; Linux suite in e2e/linux.
-// Issue #43 / T-20: TC-20 facts sampler/uploader (sample-interval, queue ACL, restart stream_id, offline deliver).
+// Issue #43 / T-20: TC-20 facts sampler/uploader (sample-interval, queue ACL,
+// restart/Stop-Process stream continuity, offline deliver, lost-ack duplicate).
 package e2e_test

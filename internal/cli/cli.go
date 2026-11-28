@@ -60,6 +60,22 @@ type UpdateApplier interface {
 	Apply(ctx context.Context, opts updater.ApplyOptions) error
 }
 
+// DefaultAgentGroup returns the production service.Agent set: updater,
+// heartbeat, jobs, facts sampler, and facts uploader. Sampler and uploader
+// share one durable factsq under ProgramData\DadJoke\facts.
+func DefaultAgentGroup() service.Group {
+	handoff := jobs.NewHandoff()
+	paths := installer.DefaultPaths()
+	factsQ := &factsq.Queue{Dir: filepath.Join(paths.DataDir, "facts")}
+	return service.Group{
+		updater.NewPoller(),
+		heartbeat.New(handoff),
+		jobs.New(handoff),
+		sampler.New(factsQ),
+		factsup.New(factsQ),
+	}
+}
+
 // usageText is the canonical help / usage string.
 const usageText = `Usage: dad-joke <command> [flags]
 
@@ -86,18 +102,7 @@ func Run(args []string, deps Dependencies) int {
 		deps.Installer = installer.New()
 	}
 	if deps.Runner == nil {
-		handoff := jobs.NewHandoff()
-		paths := installer.DefaultPaths()
-		factsQ := &factsq.Queue{Dir: filepath.Join(paths.DataDir, "facts")}
-		deps.Runner = service.NewRunner(service.Options{
-			Agent: service.Group{
-				updater.NewPoller(),
-				heartbeat.New(handoff),
-				jobs.New(handoff),
-				sampler.New(factsQ),
-				factsup.New(factsQ),
-			},
-		})
+		deps.Runner = service.NewRunner(service.Options{Agent: DefaultAgentGroup()})
 	}
 	if deps.Applier == nil {
 		deps.Applier = &updater.Applier{

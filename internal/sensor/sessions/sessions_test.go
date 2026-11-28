@@ -190,3 +190,28 @@ func TestReset(t *testing.T) {
 		t.Fatalf("after reset=%d", f[0].DurS)
 	}
 }
+
+func TestDurSClampedToContractMax300(t *testing.T) {
+	t.Parallel()
+	src := fakeSource{
+		sessions: []winsess.Session{{ID: 1, UserName: "u", UserSID: "S-1-5-21", State: winsess.StateActive}},
+	}
+	for _, interval := range []time.Duration{180 * time.Second, 300 * time.Second} {
+		interval := interval
+		t.Run(interval.String(), func(t *testing.T) {
+			t.Parallel()
+			s := New(src, interval)
+			t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			f1, _ := s.Collect(context.Background(), t0)
+			wantFirst := int32(interval / time.Second)
+			if f1[0].DurS != wantFirst {
+				t.Fatalf("first=%d want %d", f1[0].DurS, wantFirst)
+			}
+			// Elapsed = 2×interval would be 360/600 without contract clamp.
+			f2, _ := s.Collect(context.Background(), t0.Add(2*interval))
+			if f2[0].DurS != 300 {
+				t.Fatalf("clamped=%d want 300 (2×interval=%d exceeds FactDurMaxSeconds)", f2[0].DurS, 2*wantFirst)
+			}
+		})
+	}
+}
