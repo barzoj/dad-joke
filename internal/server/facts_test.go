@@ -851,6 +851,41 @@ func TestContractNegatives_ProductionPath(t *testing.T) {
 			t.Fatalf("status=%d body=%s", code, raw)
 		}
 	})
+	t.Run("heartbeat_omitted_utc_offset_400", func(t *testing.T) {
+		t.Parallel()
+		code, raw := postHeartbeat(t, base, agent, map[string]any{
+			"machine_id": machineID, "agent_version": "0.0.1", "hostname": "pc",
+			"os_version": "Win", "applied_policy_version": 0, "time_zone": "UTC",
+		})
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		if !strings.Contains(string(raw), "utc_offset_minutes") {
+			t.Fatalf("body=%s", raw)
+		}
+	})
+	t.Run("heartbeat_null_utc_offset_400", func(t *testing.T) {
+		t.Parallel()
+		code, raw := postHeartbeat(t, base, agent, map[string]any{
+			"machine_id": machineID, "agent_version": "0.0.1", "hostname": "pc",
+			"os_version": "Win", "applied_policy_version": 0, "time_zone": "UTC",
+			"utc_offset_minutes": nil,
+		})
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+	})
+	t.Run("facts_omitted_utc_offset_400", func(t *testing.T) {
+		t.Parallel()
+		code, _, raw := postFactsMap(t, base, agent, map[string]any{
+			"machine_id": machineID, "stream_id": streamID, "seq": 1,
+			"sent_at": "2026-11-28T12:00:00Z", "time_zone": "UTC",
+			"facts": []any{},
+		})
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+	})
 	t.Run("facts_seq_zero_400", func(t *testing.T) {
 		t.Parallel()
 		code, _, raw := postFactsMap(t, base, agent, map[string]any{

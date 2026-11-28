@@ -18,6 +18,8 @@ func mustUUID(s string) openapi_types.UUID {
 	return id
 }
 
+func ptrInt32(v int32) *int32 { return &v }
+
 // agentStub implements agentapi.StrictServerInterface for contract round-trips.
 // Mode switches exercise ErrorResponse shapes (401 / 429) without product logic.
 type agentStub struct {

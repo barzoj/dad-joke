@@ -422,8 +422,7 @@ func TestReconcileConfigPreservesOnReinstall(t *testing.T) {
 	existing := &config.Config{
 		SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 3,
 		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32),
-		BackendURL: "https://api.example.com", HeartbeatIntervalSeconds: 45,
-	}
+		BackendURL: "https://api.example.com", HeartbeatIntervalSeconds: 45, SampleIntervalSeconds: 60}
 	cfg, out, err := reconcileConfig(existing, InstallOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -441,8 +440,7 @@ func TestReconcileConfigSetsBackendURLFlag(t *testing.T) {
 	existing := &config.Config{
 		SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 3,
 		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32),
-		BackendURL: "https://old.example.com", HeartbeatIntervalSeconds: 45,
-	}
+		BackendURL: "https://old.example.com", HeartbeatIntervalSeconds: 45, SampleIntervalSeconds: 60}
 	cfg, _, err := reconcileConfig(existing, InstallOptions{
 		BackendURLSet: true, BackendURL: "http://127.0.0.1:8080",
 		HeartbeatIntervalSet: true, HeartbeatIntervalSeconds: 15,
@@ -470,8 +468,7 @@ func TestReconcileConfigUpdatesTokenKeepsMachineID(t *testing.T) {
 	t.Parallel()
 	existing := &config.Config{
 		SchemaVersion: 1, ReleaseAPIURL: "http://x", PollIntervalSeconds: 3,
-		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32),
-	}
+		MachineID: "550e8400-e29b-41d4-a716-446655440000", Token: strings.Repeat("ab", 32), SampleIntervalSeconds: 60}
 	cfg, out, err := reconcileConfig(existing, InstallOptions{TokenSet: true, Token: "new-secret"})
 	if err != nil {
 		t.Fatal(err)

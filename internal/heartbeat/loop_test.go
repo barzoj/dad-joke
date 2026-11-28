@@ -159,6 +159,7 @@ func TestLoopSendsBearerMachineIDVersion(t *testing.T) {
 		Log:     logs,
 		Clock:   RealClock{},
 		Host:    fakeHost{},
+		Zone:    func(time.Time) (string, int32) { return "UTC", 0 },
 		NewClient: func(url string) (HeartbeatClient, error) {
 			if url != cfg.BackendURL {
 				t.Fatalf("url = %q", url)
@@ -207,8 +208,11 @@ func TestLoopSendsBearerMachineIDVersion(t *testing.T) {
 	if fc.lastBody.AppliedPolicyVersion != 0 {
 		t.Fatalf("applied_policy_version = %d", fc.lastBody.AppliedPolicyVersion)
 	}
-	if fc.lastBody.TimeZone != "UTC" || fc.lastBody.UtcOffsetMinutes != 0 {
-		t.Fatalf("timezone placeholder = %q/%d", fc.lastBody.TimeZone, fc.lastBody.UtcOffsetMinutes)
+	if fc.lastBody.TimeZone != "UTC" {
+		t.Fatalf("time_zone = %q, want UTC", fc.lastBody.TimeZone)
+	}
+	if fc.lastBody.UtcOffsetMinutes == nil || *fc.lastBody.UtcOffsetMinutes != 0 {
+		t.Fatalf("utc_offset_minutes = %v, want 0", fc.lastBody.UtcOffsetMinutes)
 	}
 	if strings.Contains(logs.joined(), cfg.Token) {
 		t.Fatalf("token leaked in logs: %s", logs.joined())

@@ -13,6 +13,8 @@
 //   - backend_url: optional AgentAPI base URL (empty = local-only, no heartbeat).
 //   - heartbeat_interval_seconds: heartbeat period when backend_url is set
 //     (default 60); preserved across reinstalls/self-updates.
+//   - sample_interval_seconds: facts sampling period (default 60, valid 15..300);
+//     preserved across reinstalls/self-updates.
 //
 // The raw token must never appear in service logs, debug output, or outbound
 // HTTP headers (e.g. GitHub Releases polls). Config.String redacts it.
@@ -39,6 +41,15 @@ const DefaultPollIntervalSeconds = 60
 // DefaultHeartbeatIntervalSeconds is the default AgentAPI heartbeat interval (Issue #10).
 const DefaultHeartbeatIntervalSeconds = 60
 
+// DefaultSampleIntervalSeconds is the default facts sampling interval (T-20).
+const DefaultSampleIntervalSeconds = 60
+
+// SampleIntervalMinSeconds / SampleIntervalMaxSeconds bound sample_interval_seconds.
+const (
+	SampleIntervalMinSeconds = 15
+	SampleIntervalMaxSeconds = 300
+)
+
 // ErrInvalid is returned when config fails validation.
 var ErrInvalid = errors.New("invalid config")
 
@@ -51,6 +62,7 @@ type Config struct {
 	Token                    string `json:"token"`
 	BackendURL               string `json:"backend_url"`
 	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds"`
+	SampleIntervalSeconds    int    `json:"sample_interval_seconds"`
 }
 
 // Default returns a new Config populated with compile-time / product defaults.
@@ -63,6 +75,7 @@ func Default() Config {
 		ReleaseAPIURL:            buildinfo.ReleaseAPIURL,
 		PollIntervalSeconds:      DefaultPollIntervalSeconds,
 		HeartbeatIntervalSeconds: DefaultHeartbeatIntervalSeconds,
+		SampleIntervalSeconds:    DefaultSampleIntervalSeconds,
 	}
 }
 
@@ -70,6 +83,9 @@ func Default() Config {
 func (c *Config) applyDefaults() {
 	if c.HeartbeatIntervalSeconds < 1 {
 		c.HeartbeatIntervalSeconds = DefaultHeartbeatIntervalSeconds
+	}
+	if c.SampleIntervalSeconds < 1 {
+		c.SampleIntervalSeconds = DefaultSampleIntervalSeconds
 	}
 }
 
@@ -79,8 +95,16 @@ func (c Config) String() string {
 	if c.Token != "" {
 		tok = RedactedToken
 	}
-	return fmt.Sprintf("Config{SchemaVersion:%d ReleaseAPIURL:%q PollIntervalSeconds:%d MachineID:%q Token:%s BackendURL:%q HeartbeatIntervalSeconds:%d}",
-		c.SchemaVersion, c.ReleaseAPIURL, c.PollIntervalSeconds, c.MachineID, tok, c.BackendURL, c.HeartbeatIntervalSeconds)
+	return fmt.Sprintf("Config{SchemaVersion:%d ReleaseAPIURL:%q PollIntervalSeconds:%d MachineID:%q Token:%s BackendURL:%q HeartbeatIntervalSeconds:%d SampleIntervalSeconds:%d}",
+		c.SchemaVersion, c.ReleaseAPIURL, c.PollIntervalSeconds, c.MachineID, tok, c.BackendURL, c.HeartbeatIntervalSeconds, c.SampleIntervalSeconds)
+}
+
+// ValidateSampleInterval checks sample_interval_seconds is in 15..300.
+func ValidateSampleInterval(seconds int) error {
+	if seconds < SampleIntervalMinSeconds || seconds > SampleIntervalMaxSeconds {
+		return fmt.Errorf("%w: sample_interval_seconds must be %d..%d (got %d)", ErrInvalid, SampleIntervalMinSeconds, SampleIntervalMaxSeconds, seconds)
+	}
+	return nil
 }
 
 // Validate checks required fields and ranges, including machine identity and backend_url.
@@ -96,6 +120,9 @@ func (c Config) Validate() error {
 	}
 	if c.HeartbeatIntervalSeconds < 1 {
 		return fmt.Errorf("%w: heartbeat_interval_seconds must be >= 1 (got %d)", ErrInvalid, c.HeartbeatIntervalSeconds)
+	}
+	if err := ValidateSampleInterval(c.SampleIntervalSeconds); err != nil {
+		return err
 	}
 	if err := ValidateBackendURL(c.BackendURL); err != nil {
 		return err

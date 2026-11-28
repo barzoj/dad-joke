@@ -53,7 +53,7 @@ func validPostFactsBody() agentapi.PostFactsRequest {
 		Seq:              1,
 		SentAt:           time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC),
 		TimeZone:         "UTC",
-		UtcOffsetMinutes: 0,
+		UtcOffsetMinutes: ptrInt32(0),
 		Facts: []agentapi.FactItem{
 			sampleFactItem(agentapi.SessionState, ""),
 			sampleFactItem(agentapi.ProcSample, ""),

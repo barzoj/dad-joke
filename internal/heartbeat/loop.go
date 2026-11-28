@@ -14,6 +14,7 @@ import (
 	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/jobs"
+	"github.com/barzoj/dad-joke/internal/tzmap"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -50,6 +51,10 @@ type Loop struct {
 
 	// Jobs receives pending_job_ids asynchronously (non-blocking). Nil disables handoff.
 	Jobs jobs.PendingSink
+
+	// Zone resolves the machine IANA zone + UTC offset for a heartbeat.
+	// Nil uses tzmap.Resolve (Windows id → IANA, else time.Local).
+	Zone func(now time.Time) (iana string, offsetMinutes int32)
 }
 
 // New returns a production Loop wired to default paths.
@@ -210,15 +215,19 @@ func (l *Loop) beatOnce(ctx context.Context, client HeartbeatClient, cfg config.
 	if err != nil {
 		hostname = "unknown"
 	}
+	resolve := l.Zone
+	if resolve == nil {
+		resolve = tzmap.Resolve
+	}
+	zone, offset := resolve(l.Clock.Now())
 	body := agentapi.PostHeartbeatJSONRequestBody{
 		MachineId:            machineID,
 		AgentVersion:         l.Version,
 		Hostname:             hostname,
 		OsVersion:            l.Host.OSVersion(),
 		AppliedPolicyVersion: l.AppliedPolicyVersion,
-		// Placeholder until T-20 wires the real Windows→IANA zone.
-		TimeZone:         "UTC",
-		UtcOffsetMinutes: 0,
+		TimeZone:             zone,
+		UtcOffsetMinutes:     &offset,
 	}
 	resp, err := client.PostHeartbeatWithResponse(ctx, body, bearerEditor(cfg.Token))
 	if err != nil {

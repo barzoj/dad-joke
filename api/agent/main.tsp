@@ -67,10 +67,13 @@ model HeartbeatRequest {
   /**
    * UTC offset of the machine-local zone at heartbeat time, in minutes (−840..840).
    * Cross-check for a wrong Windows→IANA mapping.
+   * Required (must be present and non-null). Modeled as `int32 | null` so
+   * generated Go bindings use `*int32` and omitted/null values bind to nil
+   * instead of silently becoming 0; the server rejects nil.
    */
   @minValue(-840)
   @maxValue(840)
-  utc_offset_minutes: int32;
+  utc_offset_minutes: int32 | null;
 }
 
 /** Heartbeat acknowledgement and next-desired-state hints. */
