@@ -20,24 +20,26 @@ type testUser struct {
 func createStandardUser(t *testing.T) *testUser {
 	t.Helper()
 	name := "djspike_" + randomHex(4)
-	// Alphanumeric only — avoids net-user / scheduled-task quoting pitfalls.
-	// Length ≤14. Meets complexity via mixed case + digit.
-	pass := "Dj9" + randomHex(5) // 3+10 = 13
+	// Alphanumeric only, ≤14 chars. Avoid ConvertTo-SecureString — the
+	// Microsoft.PowerShell.Security module often fails to autoload under the
+	// hosted runner's PowerShell constraints.
+	pass := "Dj9" + randomHex(5) // 13 chars
 	if len(pass) > 14 {
 		pass = pass[:14]
 	}
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $name = %s
-$pass = ConvertTo-SecureString -String %s -AsPlainText -Force
-# Remove leftover account if a prior run leaked it.
-Get-LocalUser -Name $name -ErrorAction SilentlyContinue | Remove-LocalUser -ErrorAction SilentlyContinue
-New-LocalUser -Name $name -Password $pass -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires | Out-Null
-Add-LocalGroupMember -Group 'Users' -Member $name -ErrorAction SilentlyContinue
-# Ensure not elevated.
-Remove-LocalGroupMember -Group 'Administrators' -Member $name -ErrorAction SilentlyContinue
-$admins = Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
-if ($admins -match [regex]::Escape($name)) { throw 'user unexpectedly in Administrators' }
+$plain = %s
+net user $name /delete 2>$null | Out-Null
+# net user accepts a plaintext password without the Security module.
+$net = net user $name $plain /add 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw "net user /add failed: $net" }
+net localgroup Administrators $name /delete 2>&1 | Out-Null
+$admins = net localgroup Administrators | Out-String
+if ($admins -match ('(?im)^\s*' + [regex]::Escape($name) + '\s*$')) {
+  throw 'user unexpectedly in Administrators'
+}
 $sid = (New-Object System.Security.Principal.NTAccount($name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
 Write-Output $sid
 `, quotePS(name), quotePS(pass)))
@@ -60,11 +62,10 @@ $ErrorActionPreference='SilentlyContinue'
 Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
   Where-Object { $_.UserName -and ($_.UserName -like ('*\' + %s) -or $_.UserName -eq %s) } |
   Stop-Process -Force -ErrorAction SilentlyContinue
-Get-LocalUser -Name %s -ErrorAction SilentlyContinue | Remove-LocalUser -ErrorAction SilentlyContinue
 net user %s /delete 2>$null | Out-Null
 Remove-Item -LiteralPath ('C:\Users\' + %s) -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath ('C:\Windows\System32\GroupPolicyUsers\' + %s) -Recurse -Force -ErrorAction SilentlyContinue
-`, quotePS(u.Name), quotePS(u.Name), quotePS(u.Name), u.Name, quotePS(u.Name), quotePS(u.SID)))
+`, quotePS(u.Name), quotePS(u.Name), u.Name, quotePS(u.Name), quotePS(u.SID)))
 }
 
 func randomHex(nBytes int) string {
@@ -75,22 +76,21 @@ func randomHex(nBytes int) string {
 
 func loadUserHive(t testing.TB, u *testUser) (hivePath string, unload func()) {
 	t.Helper()
-	// Create the profile via LoadUserProfile after an interactive LogonUser.
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public class NativeProfile {
-  [StructLayout(LayoutKind.Sequential)]
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
   public struct PROFILEINFO {
     public int dwSize;
     public int dwFlags;
-    [MarshalAs(UnmanagedType.LPTStr)] public string lpUserName;
-    [MarshalAs(UnmanagedType.LPTStr)] public string lpProfilePath;
-    [MarshalAs(UnmanagedType.LPTStr)] public string lpDefaultPath;
-    [MarshalAs(UnmanagedType.LPTStr)] public string lpServerName;
-    [MarshalAs(UnmanagedType.LPTStr)] public string lpPolicyPath;
+    public string lpUserName;
+    public string lpProfilePath;
+    public string lpDefaultPath;
+    public string lpServerName;
+    public string lpPolicyPath;
     public IntPtr hProfile;
   }
   [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
@@ -118,7 +118,6 @@ if (-not [NativeProfile]::LoadUserProfile($token, [ref]$pi)) {
   [NativeProfile]::CloseHandle($token) | Out-Null
   throw "LoadUserProfile failed: $([ComponentModel.Win32Exception]::new($err).Message)"
 }
-# Persist token+profile handles for unload via env files is awkward; use ProfileList path + reg load instead.
 [NativeProfile]::UnloadUserProfile($token, $pi.hProfile) | Out-Null
 [NativeProfile]::CloseHandle($token) | Out-Null
 $sid = %s

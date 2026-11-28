@@ -169,11 +169,19 @@ func restoreLocalGPO(t testing.TB, b *lgpoBackup) {
 
 func refreshPolicy(t testing.TB) (latency time.Duration, via string, err error) {
 	t.Helper()
-	// Drop CSE history so a version bump is not ignored against a stale cache.
-	_, _ = powershell(t, `
+	return refreshPolicyOpts(t, false)
+}
+
+func refreshPolicyOpts(t testing.TB, clearHistory bool) (latency time.Duration, via string, err error) {
+	t.Helper()
+	if clearHistory {
+		// Only when callers intentionally force re-apply; clearing History bypasses
+		// the GPT.INI version check and would invalidate the no-bump assertion.
+		_, _ = powershell(t, `
 $ErrorActionPreference='SilentlyContinue'
 Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\History\*' -Recurse -Force
 `)
+	}
 	start := time.Now()
 	out, err := runCmd("gpupdate.exe", "/Target:Computer", "/Force")
 	out2, err2 := runCmd("gpupdate.exe", "/Target:User", "/Force")
@@ -190,8 +198,8 @@ public class NativeGP {
   public static extern bool RefreshPolicyEx(bool bMachine, uint dwOptions);
 }
 "@
-[void][NativeGP]::RefreshPolicyEx($true, 1)
-[void][NativeGP]::RefreshPolicyEx($false, 1)
+[void][NativeGP]::RefreshPolicyEx($true, 0)
+[void][NativeGP]::RefreshPolicyEx($false, 0)
 `)
 	return lat, "gpupdate+RefreshPolicyEx", nil
 }

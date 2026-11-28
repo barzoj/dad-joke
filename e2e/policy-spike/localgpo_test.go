@@ -146,17 +146,31 @@ func TestLocalGPO_PerUserSID(t *testing.T) {
 func TestLocalGPO_NoVersionBump_NoApply(t *testing.T) {
 	requireAdmin(t)
 	backupLocalGPO(t)
-	st := readGPT(t)
 
-	// Write a distinctive machine policy without bumping GPT version.
+	// Establish a known baseline version with Registry CSE present, then apply
+	// an empty/no-op refresh so History matches that version.
+	st := readGPT(t)
+	mv, uv := st.MachineVersion, st.UserVersion
+	if mv < 1 {
+		mv = 1
+	}
+	if uv < 1 {
+		uv = 1
+	}
+	mExt := ensureExtPair(st.MachineExtNames, cseRegistry, toolMachine)
+	uExt := ensureExtPair(st.UserExtNames, cseRegistry, toolUser)
+	writeGPT(t, mv, uv, mExt, uExt)
+	_, _, _ = refreshPolicyOpts(t, false)
+
+	deleteRegKey(t, `HKLM:\Software\Policies\DadJokeSpike`)
 	marker := uint32(0xDAD10)
+	// Change Registry.pol content but keep GPT.INI Version identical.
 	appendMachinePol(t, []PolEntry{
 		{Key: `Software\Policies\DadJokeSpike`, Value: "NoBump", Type: regDWORD, Data: dwordData(marker)},
 	})
-	// Restore prior version explicitly (overwrite any incidental bump).
-	writeGPT(t, st.MachineVersion, st.UserVersion, ensureExtPair(st.MachineExtNames, cseRegistry, toolMachine), st.UserExtNames)
+	writeGPT(t, mv, uv, mExt, uExt)
 
-	_, _, _ = refreshPolicy(t)
+	_, _, _ = refreshPolicyOpts(t, false)
 	present, val, _ := regDWORDExists(t, `HKLM:\Software\Policies\DadJokeSpike`, "NoBump")
 	applied := present && val == marker
 
@@ -168,7 +182,7 @@ func TestLocalGPO_NoVersionBump_NoApply(t *testing.T) {
 		NeedsRelogon:    "n/a",
 		NeedsReboot:     "n/a",
 		VisibleGpresult: "n/a",
-		Gotchas:         fmt.Sprintf("without version bump, apply observed=%v present=%v val=%d", applied, present, val),
+		Gotchas:         fmt.Sprintf("without version bump, apply observed=%v present=%v val=%d (gpsvc skips when Version unchanged even if Registry.pol bytes changed)", applied, present, val),
 		ClientSKUNote:   "gpsvc version check is core GP behavior on all SKUs",
 	})
 
