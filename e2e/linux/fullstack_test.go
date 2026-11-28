@@ -358,36 +358,99 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 		t.Fatalf("heartbeat: %d %v", code, hb)
 	}
 
-	// Facts / usage contracts are mounted but not yet implemented (501 JSON).
+	// Facts ingest + usage aggregate (T-19).
+	sentAt := time.Now().UTC().Truncate(time.Second)
+	streamID := uuid.NewString()
 	factsBody := map[string]any{
 		"machine_id":         machineID,
-		"stream_id":          uuid.NewString(),
+		"stream_id":          streamID,
 		"seq":                1,
-		"sent_at":            time.Now().UTC().Format(time.RFC3339),
+		"sent_at":            sentAt.Format(time.RFC3339),
 		"time_zone":          "UTC",
 		"utc_offset_minutes": 0,
-		"facts":              []any{},
+		"facts": []any{
+			map[string]any{
+				"ts": sentAt.Format(time.RFC3339), "kind": "proc.sample", "plugin": "e2e", "dur_s": 60,
+				"data": map[string]any{"exes": []any{"notepad.exe"}},
+			},
+			map[string]any{
+				"ts": sentAt.Format(time.RFC3339), "kind": "fg.sample", "plugin": "e2e", "dur_s": 60,
+				"data": map[string]any{"exe": "notepad.exe", "pid": 1, "title": "n", "idle_s": 0},
+			},
+			map[string]any{
+				"ts": sentAt.Format(time.RFC3339), "kind": "session.state", "plugin": "e2e", "dur_s": 1,
+				"data": map[string]any{"session_id": "1", "username": "kid", "state": "active"},
+			},
+		},
 	}
 	code, raw := postJSON(t, http.MethodPost, base+"/v1/facts", agentTok, factsBody)
-	if code != http.StatusNotImplemented {
-		t.Fatalf("POST /v1/facts want 501, got %d %s", code, raw)
+	if code != http.StatusOK {
+		t.Fatalf("POST /v1/facts want 200, got %d %s", code, raw)
 	}
-	assertErrorJSON(t, raw)
+	var ack map[string]any
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack["duplicate"] != false {
+		t.Fatalf("ack=%v", ack)
+	}
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/facts", agentTok, factsBody)
+	if code != http.StatusOK {
+		t.Fatalf("POST /v1/facts replay want 200, got %d %s", code, raw)
+	}
+	_ = json.Unmarshal(raw, &ack)
+	if ack["duplicate"] != true {
+		t.Fatalf("replay ack=%v", ack)
+	}
 	code, raw = postJSON(t, http.MethodPost, base+"/v1/facts", "", factsBody)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("POST /v1/facts unauthenticated want 401, got %d %s", code, raw)
 	}
-	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=2026-11-28", patA, nil)
-	if code != http.StatusNotImplemented {
-		t.Fatalf("GET usage want 501, got %d %s", code, raw)
+	usageDate := sentAt.UTC().Format("2006-01-02")
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date="+usageDate, patA, nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET usage want 200, got %d %s", code, raw)
 	}
-	assertErrorJSON(t, raw)
-	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=2026-11-28", "", nil)
+	var usage map[string]any
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		t.Fatal(err)
+	}
+	apps, _ := usage["apps"].([]any)
+	if len(apps) != 1 {
+		t.Fatalf("usage apps=%v", usage)
+	}
+	app := apps[0].(map[string]any)
+	if app["exe"] != "notepad.exe" || int(app["seconds"].(float64)) != 60 || int(app["fg_seconds"].(float64)) != 60 {
+		t.Fatalf("app=%v", app)
+	}
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date="+usageDate, "", nil)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("GET usage unauthenticated want 401, got %d %s", code, raw)
 	}
 
-	// Production-path contract validation (before 501 stub).
+	// MCP get_usage
+	usageTool := decodeToolJSON(t, callTool(t, mcpA, "get_usage", map[string]any{
+		"machine_id": machineID, "date": usageDate,
+	})).(map[string]any)
+	toolApps, _ := usageTool["apps"].([]any)
+	if len(toolApps) != 1 {
+		t.Fatalf("get_usage=%v", usageTool)
+	}
+	emptyUsage := decodeToolJSON(t, callTool(t, mcpA, "get_usage", map[string]any{
+		"machine_id": machineID, "date": "2000-01-01",
+	})).(map[string]any)
+	emptyApps, ok := emptyUsage["apps"].([]any)
+	if !ok || emptyApps == nil || len(emptyApps) != 0 {
+		t.Fatalf("empty-day get_usage=%v", emptyUsage)
+	}
+	badUsage := callTool(t, mcpA, "get_usage", map[string]any{
+		"machine_id": uuid.NewString(), "date": usageDate,
+	})
+	if !badUsage.IsError {
+		t.Fatal("unknown machine get_usage should error")
+	}
+
+	// Production-path contract validation.
 	code, raw = postJSON(t, http.MethodPost, base+"/v1/heartbeat", agentTok, map[string]any{
 		"machine_id": machineID, "agent_version": "0.0.1-e2e", "hostname": "e2e-linux",
 		"os_version": "linux", "applied_policy_version": 0,
@@ -495,6 +558,15 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 	sessionB := registerLogin(t, base, emailB, pass+"B", "tenant-b-"+uuid.NewString()[:8])
 	patB := issuePAT(t, base, sessionB)
 	mcpB := mcpConnect(t, base, patB)
+
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date="+usageDate, patB, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("GET usage cross-tenant want 404, got %d %s", code, raw)
+	}
+	resUsageB := callTool(t, mcpB, "get_usage", map[string]any{"machine_id": machineID, "date": usageDate})
+	if !resUsageB.IsError {
+		t.Fatal("tenant B get_usage should fail")
+	}
 
 	listBObj := decodeToolJSON(t, callTool(t, mcpB, "list_machines", nil)).(map[string]any)
 	listB, _ := listBObj["machines"].([]any)

@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,7 +20,10 @@ import (
 	"github.com/barzoj/dad-joke/internal/bootstrap"
 	"github.com/barzoj/dad-joke/internal/createuser"
 	"github.com/barzoj/dad-joke/internal/server"
+	"github.com/barzoj/dad-joke/internal/store"
 	mongostore "github.com/barzoj/dad-joke/internal/store/mongo"
+
+	_ "time/tzdata" // embed IANA zones for distroless / minimal images
 )
 
 func main() {
@@ -38,13 +42,34 @@ func run(args []string) int {
 	return runServe(args)
 }
 
-func mongoConfigFromEnv() mongostore.Config {
+func mongoConfigFromEnv() (mongostore.Config, error) {
 	uri := strings.TrimSpace(os.Getenv("DAD_JOKE_MONGODB_URI"))
 	if uri == "" {
 		uri = "mongodb://127.0.0.1:27017"
 	}
 	db := strings.TrimSpace(os.Getenv("DAD_JOKE_MONGODB_DATABASE"))
-	return mongostore.Config{URI: uri, Database: db}
+	retention, err := factsRetentionDaysFromEnv()
+	if err != nil {
+		return mongostore.Config{}, err
+	}
+	return mongostore.Config{URI: uri, Database: db, FactsRetentionDays: retention}, nil
+}
+
+// factsRetentionDaysFromEnv reads DAD_JOKE_FACTS_RETENTION_DAYS (default 30, valid 1..365).
+// Invalid values return an error so the process exits before listening.
+func factsRetentionDaysFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv("DAD_JOKE_FACTS_RETENTION_DAYS"))
+	if raw == "" {
+		return store.FactRetentionDaysDefault, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("DAD_JOKE_FACTS_RETENTION_DAYS must be an integer 1..%d, got %q", store.FactRetentionDaysMax, raw)
+	}
+	if n < store.FactRetentionDaysMin || n > store.FactRetentionDaysMax {
+		return 0, fmt.Errorf("DAD_JOKE_FACTS_RETENTION_DAYS must be %d..%d, got %d", store.FactRetentionDaysMin, store.FactRetentionDaysMax, n)
+	}
+	return n, nil
 }
 
 func runServe(args []string) int {
@@ -55,12 +80,18 @@ func runServe(args []string) int {
 		return 2
 	}
 
+	mongoCfg, err := mongoConfigFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server: %v\n", err)
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	openCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	st, err := mongostore.Open(openCtx, mongoConfigFromEnv())
+	st, err := mongostore.Open(openCtx, mongoCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "server: open store: %v\n", err)
 		return 1
@@ -75,11 +106,12 @@ func runServe(args []string) int {
 	allowSignup := envBool("ALLOW_SIGNUP", true)
 	cookieSecure := envBool("COOKIE_SECURE", true)
 	srv, err := server.New(server.Config{
-		Addr:         *addr,
-		Store:        st,
-		Log:          log.New(os.Stderr, "server: ", log.LstdFlags|log.Lmsgprefix),
-		AllowSignup:  &allowSignup,
-		CookieSecure: &cookieSecure,
+		Addr:               *addr,
+		Store:              st,
+		Log:                log.New(os.Stderr, "server: ", log.LstdFlags|log.Lmsgprefix),
+		AllowSignup:        &allowSignup,
+		CookieSecure:       &cookieSecure,
+		FactsRetentionDays: mongoCfg.FactsRetentionDays,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
@@ -109,7 +141,12 @@ func runBootstrap(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	st, err := mongostore.Open(ctx, mongoConfigFromEnv())
+	mongoCfg, err := mongoConfigFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bootstrap: %v\n", err)
+		return 1
+	}
+	st, err := mongostore.Open(ctx, mongoCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap: open store: %v\n", err)
 		return 1
@@ -159,7 +196,12 @@ func runCreateUser(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	st, err := mongostore.Open(ctx, mongoConfigFromEnv())
+	mongoCfg, err := mongoConfigFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create-user: %v\n", err)
+		return 1
+	}
+	st, err := mongostore.Open(ctx, mongoCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create-user: open store: %v\n", err)
 		return 1

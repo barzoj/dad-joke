@@ -10,10 +10,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ErrNotImplemented is returned by StrictServerInterface methods that are
-// contracted but not yet implemented (temporary 501 stub until T-19).
-var ErrNotImplemented = errors.New("not implemented")
-
 // apiError is the generated ErrorResponse JSON shape (code/message/request_id).
 type apiError struct {
 	Code      string `json:"code"`
@@ -75,13 +71,8 @@ func writeRequestBindError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // writeResponseError maps StrictServerInterface errors to ErrorResponse JSON.
-// ErrNotImplemented → 501 (temporary stub; not declared in the TypeSpec contract).
 func writeResponseError(w http.ResponseWriter, r *http.Request, err error) {
 	reqID := requestID(r)
-	if errors.Is(err, ErrNotImplemented) {
-		writeAPIError(w, http.StatusNotImplemented, "not_implemented", "not implemented", reqID)
-		return
-	}
 	msg := "internal server error"
 	if err != nil && err.Error() != "" {
 		msg = err.Error()

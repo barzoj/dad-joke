@@ -63,7 +63,7 @@ func TestValidatePostFactsRequest(t *testing.T) {
 	bad.Facts = make([]agentapi.FactItem, store.FactBatchMaxCount+1)
 	for i := range bad.Facts {
 		bad.Facts[i] = agentapi.FactItem{
-			Ts: time.Now().UTC(), Kind: agentapi.ProcSample, Plugin: "p", DurS: 0,
+			Ts: time.Now().UTC(), Kind: agentapi.ProcSample, Plugin: "p", DurS: 1,
 			Data: agentapi.FactData{Exes: &[]string{}},
 		}
 	}
@@ -73,13 +73,31 @@ func TestValidatePostFactsRequest(t *testing.T) {
 	long := strings.Repeat("x", factExeMaxLen+1)
 	bad = *valid
 	bad.Facts = []agentapi.FactItem{{
-		Ts: time.Now().UTC(), Kind: agentapi.ProcSample, Plugin: "p", DurS: 0,
+		Ts: time.Now().UTC(), Kind: agentapi.ProcSample, Plugin: "p", DurS: 1,
 		Data: agentapi.FactData{Exes: &[]string{long}},
 	}}
 	if err := validatePostFactsRequest(&bad); err == nil {
 		t.Fatal("exe item too long")
 	}
+	// Titles longer than max are accepted at contract-bound stage (truncated later).
+	title := strings.Repeat("あ", store.FactTitleMaxLen+1)
+	bad = *valid
+	bad.Facts = []agentapi.FactItem{{
+		Ts: time.Now().UTC(), Kind: agentapi.FgSample, Plugin: "p", DurS: 1,
+		Data: agentapi.FactData{
+			Exe: ptrExe("n.exe"), Pid: ptrInt32(1), Title: &title, IdleS: ptrInt32(0),
+		},
+	}}
+	if err := validatePostFactsRequest(&bad); err != nil {
+		t.Fatalf("long title should pass contract validate: %v", err)
+	}
 }
+
+func ptrExe(s string) *agentapi.DadJokeCommonExeName {
+	return &s
+}
+
+func ptrInt32(v int32) *int32 { return &v }
 
 func mustParseUUID(t *testing.T, s string) openapi_types.UUID {
 	t.Helper()

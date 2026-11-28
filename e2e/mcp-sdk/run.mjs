@@ -99,8 +99,12 @@ async function main() {
       "run_script",
       "get_job",
       "list_events",
+      "get_usage",
       "manage_agent_tokens",
     ];
+    if (names.size !== need.length) {
+      fail(`tools/list count=${names.size} want ${need.length}`);
+    }
     for (const n of need) {
       if (!names.has(n)) fail(`tools/list missing ${n}`);
     }
@@ -200,6 +204,13 @@ async function main() {
     payload = structuredPayload(res);
     assertArrayField(payload, "events", 0);
     console.log("list_events ok");
+
+    const day = new Date().toISOString().slice(0, 10);
+    res = await callTool(client, "get_usage", { machine_id: machineID, date: day });
+    payload = structuredPayload(res);
+    assertArrayField(payload, "apps", 0);
+    if (!Array.isArray(payload.apps)) fail("get_usage apps must be array");
+    console.log("get_usage empty-day ok");
 
     res = await callTool(client, "manage_agent_tokens", { action: "revoke", id: tokID });
     payload = structuredPayload(res);

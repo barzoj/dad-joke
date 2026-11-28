@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,18 @@ type Store struct {
 	policies    map[string]store.Policy
 	jobs        map[string]store.Job
 	events      map[string]store.Event // tenant|machine|event_id
+	facts       map[string]store.Fact  // tenant|machine|stream|seq|idx
+	usage       map[string]usageRow    // daily id
 	audits      []store.AuditEntry
+
+	// AfterFactInsertErr, when set, is returned by InsertBatch after a
+	// successful insert (fault injection between insert and usage Apply).
+	AfterFactInsertErr error
+}
+
+type usageRow struct {
+	store.UsageDaily
+	HW map[string]int64 // stream_id → high-water seq
 }
 
 // New returns an empty memory Store.
@@ -49,6 +61,8 @@ func New() *Store {
 		policies:    make(map[string]store.Policy),
 		jobs:        make(map[string]store.Job),
 		events:      make(map[string]store.Event),
+		facts:       make(map[string]store.Fact),
+		usage:       make(map[string]usageRow),
 	}
 }
 
@@ -77,6 +91,8 @@ func (s *Store) Machines() store.MachineStore { return machineStore{s} }
 func (s *Store) Policies() store.PolicyStore  { return policyStore{s} }
 func (s *Store) Jobs() store.JobStore         { return jobStore{s} }
 func (s *Store) Events() store.EventStore     { return eventStore{s} }
+func (s *Store) Facts() store.FactStore       { return factStore{s} }
+func (s *Store) Usage() store.UsageStore      { return usageStore{s} }
 func (s *Store) Audits() store.AuditStore     { return auditStore{s} }
 
 type tenantStore struct{ s *Store }
@@ -746,4 +762,117 @@ func copyStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+type factStore struct{ s *Store }
+
+func factKey(tenantID, machineID, streamID string, seq int64, idx int32) string {
+	return tenantID + "|" + machineID + "|" + streamID + "|" +
+		strconv.FormatInt(seq, 10) + "|" + strconv.FormatInt(int64(idx), 10)
+}
+
+func (f factStore) InsertBatch(_ context.Context, facts []store.Fact) (int, error) {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+	inserted := 0
+	for i := range facts {
+		ft := facts[i]
+		if ft.TenantID == "" || ft.MachineID == "" || ft.StreamID == "" {
+			return inserted, store.ErrInvalid
+		}
+		key := factKey(ft.TenantID, ft.MachineID, ft.StreamID, ft.Seq, ft.Idx)
+		if _, ok := f.s.facts[key]; ok {
+			continue
+		}
+		if ft.ID == "" {
+			ft.ID = uuid.NewString()
+		}
+		if ft.Data != nil {
+			ft.Data = append(json.RawMessage(nil), ft.Data...)
+		}
+		f.s.facts[key] = ft
+		facts[i] = ft
+		inserted++
+	}
+	if inserted > 0 && f.s.AfterFactInsertErr != nil {
+		return inserted, f.s.AfterFactInsertErr
+	}
+	return inserted, nil
+}
+
+// FactCount returns the number of stored facts (test helper).
+func (s *Store) FactCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.facts)
+}
+
+// FactsSnapshot returns a copy of all stored facts (test helper).
+func (s *Store) FactsSnapshot() []store.Fact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]store.Fact, 0, len(s.facts))
+	for _, ft := range s.facts {
+		cp := ft
+		if ft.Data != nil {
+			cp.Data = append(json.RawMessage(nil), ft.Data...)
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
+type usageStore struct{ s *Store }
+
+func (u usageStore) Apply(_ context.Context, tenantID, machineID, streamID string, seq int64, deltas []store.UsageDelta) (int, error) {
+	if tenantID == "" || machineID == "" || streamID == "" {
+		return 0, store.ErrInvalid
+	}
+	u.s.mu.Lock()
+	defer u.s.mu.Unlock()
+	updated := 0
+	for _, d := range deltas {
+		if d.Date == "" || d.Bucket == "" || d.Seconds == 0 {
+			continue
+		}
+		id := tenantID + "|" + machineID + "|" + d.Date + "|" + d.Bucket
+		row, ok := u.s.usage[id]
+		if !ok {
+			row = usageRow{
+				UsageDaily: store.UsageDaily{
+					TenantID: tenantID, MachineID: machineID,
+					Date: d.Date, TimeZone: d.TimeZone, Bucket: d.Bucket,
+				},
+				HW: make(map[string]int64),
+			}
+		}
+		if row.HW == nil {
+			row.HW = make(map[string]int64)
+		}
+		if hw, exists := row.HW[streamID]; exists && hw >= seq {
+			u.s.usage[id] = row
+			continue // already applied
+		}
+		row.Seconds += d.Seconds
+		row.TimeZone = d.TimeZone
+		row.HW[streamID] = seq
+		u.s.usage[id] = row
+		updated++
+	}
+	return updated, nil
+}
+
+func (u usageStore) ListByMachine(_ context.Context, tenantID, machineID, date string) ([]store.UsageDaily, error) {
+	u.s.mu.Lock()
+	defer u.s.mu.Unlock()
+	out := make([]store.UsageDaily, 0)
+	for _, row := range u.s.usage {
+		if row.TenantID != tenantID || row.MachineID != machineID || row.Date != date {
+			continue
+		}
+		cp := row.UsageDaily
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	return out, nil
 }

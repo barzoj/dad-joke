@@ -42,10 +42,10 @@ Only what exists on `main` today:
 - **Versioned low-level policies** — opaque JSON desired state per machine with monotonic versions (`expected_version` optimistic concurrency); agents fetch applied/desired versions via AgentAPI.
 - **One-shot jobs** — enqueue `powershell` or `cmd` scripts; agent claims under a Job Object with hard timeouts, 64 KiB I/O caps, and local JSONL audit.
 - **Events** — agent telemetry ingest with idempotent `event_id`s and a 30-day MongoDB TTL.
-- **Facts & usage (contracts)** — AgentAPI `POST /v1/facts` and ControlAPI `GET /v1/machines/{machine_id}/usage?date=` are defined and mounted; handlers return `501` until persistence lands.
+- **Facts & usage** — AgentAPI `POST /v1/facts` append-only ingest (idempotent `(stream_id, seq)`, configurable retention via `DAD_JOKE_FACTS_RETENTION_DAYS`, default 30 days); ControlAPI `GET /v1/machines/{machine_id}/usage?date=` returns per-app `seconds` / `fg_seconds` for one machine-local calendar day.
 - **Self-update** — SHA-256–verified updates from GitHub Releases (poll interval default 60s); automatic service restart after apply.
 - **Multi-tenant backend** — local email/password auth, revocable sessions (`dj_ses_…`), agent tokens (`dj_agt_…`), API keys (`dj_pat_…`).
-- **Remote MCP** — Streamable HTTP at `/mcp` with seven tools: `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `manage_agent_tokens`.
+- **Remote MCP** — Streamable HTTP at `/mcp` with eight tools: `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `get_usage`, `manage_agent_tokens`.
 
 ## Architecture at a glance
 
@@ -127,6 +127,7 @@ Compose / `.env` values and server process env (defaults from `cmd/server` and `
 | `IMAGE_TAG` | `latest` | `deploy/env.example`, prod compose | `ghcr.io/barzoj/dad-joke-server` tag |
 | `DAD_JOKE_MONGODB_URI` | `mongodb://127.0.0.1:27017` | server / compose | MongoDB connection URI (compose sets `mongodb://mongo:27017`) |
 | `DAD_JOKE_MONGODB_DATABASE` | `dadjoke` | server / compose / `.env` | Database name |
+| `DAD_JOKE_FACTS_RETENTION_DAYS` | `30` | server / compose / `.env` | Facts TTL and max fact age on ingest (valid `1..365`; invalid → process exits before listen) |
 | `DAD_JOKE_HTTP_ADDR` | `:8080` | server / compose | HTTP listen address (stay internal behind the proxy) |
 | `ALLOW_SIGNUP` | `true` in process default; prod compose / `.env` prefer `false` | server / compose / `.env` | When `false`, `POST /v1/auth/register` returns `403` |
 | `COOKIE_SECURE` | `true` | server / compose | Session cookie `Secure` flag (`false` only for local HTTP) |
@@ -238,7 +239,7 @@ Example generic client config:
 }
 ```
 
-**Tools:** `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `manage_agent_tokens`.
+**Tools:** `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `get_usage`, `manage_agent_tokens`.
 
 Sample prompt: *List my machines, then create an agent token named `laptop` and show the new token id (not the secret if already shown).*
 

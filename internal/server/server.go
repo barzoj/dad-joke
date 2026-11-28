@@ -51,6 +51,10 @@ type Config struct {
 	AllowSignup *bool
 	// CookieSecure sets the Secure flag on session cookies (nil → true).
 	CookieSecure *bool
+
+	// FactsRetentionDays bounds how old a fact ts may be (1..365; 0 → default 30).
+	// Must match the Mongo facts TTL configured at store open.
+	FactsRetentionDays int
 }
 
 // Server is a hardened HTTP listener.
@@ -136,7 +140,12 @@ func New(cfg Config) (*Server, error) {
 		CookieSecure:  cookieSecure,
 		LoginFailures: loginFail,
 	}
-	agent := &AgentAPI{Store: cfg.Store, Audit: auditLogger, Clock: clock}
+	agent := &AgentAPI{
+		Store:              cfg.Store,
+		Audit:              auditLogger,
+		Clock:              clock,
+		FactsRetentionDays: cfg.FactsRetentionDays,
+	}
 
 	root := http.NewServeMux()
 	s := &Server{cfg: cfg, logger: logger}

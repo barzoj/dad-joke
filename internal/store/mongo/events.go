@@ -76,6 +76,17 @@ func isOnlyDuplicateKeyBulkError(err error) bool {
 	return mongo.IsDuplicateKeyError(err)
 }
 
+func countBulkDupErrors(err error) int {
+	var bwe mongo.BulkWriteException
+	if errors.As(err, &bwe) {
+		return len(bwe.WriteErrors)
+	}
+	if mongo.IsDuplicateKeyError(err) {
+		return 1
+	}
+	return 0
+}
+
 func (e eventStore) List(ctx context.Context, q store.EventQuery) (store.EventPage, error) {
 	filter := bson.D{
 		{Key: "tenant_id", Value: q.TenantID},
