@@ -334,6 +334,12 @@ jobs:
       - name: Scan deploy/scripts/docs/workflows
         run: ./scripts/no-leak-check.sh
 
+      - name: Docs check (README links, install flags, env vars)
+        run: ./scripts/docs-check.sh
+
+      - name: Docs check self-test
+        run: ./scripts/docs-check_test.sh
+
   coverage:
     name: Coverage (linux-amd64)
     runs-on: ubuntu-latest

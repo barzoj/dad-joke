@@ -34,6 +34,7 @@ Guidance for coding and review agents working in this repository. Canonical arch
 | **SOLID** | Cohesive packages; Windows OS calls isolated behind interfaces. |
 | **API-first** | Versioned contracts before code at every boundary. |
 | **Test-first** | Unit tests for edge cases; Windows E2E acceptance tests for enforcement behavior. |
+| **Docs in the same PR** | Any PR that changes user-visible behaviour, install/upgrade steps, config keys, env vars, CLI flags, release artifacts, or an HTTP/MCP API **must** update [`README.md`](README.md) (and [`docs/`](docs/) when design changes) in the **same** PR. Reviewers must reject PRs that ship behaviour or contract changes without matching docs. |
 
 ## Code Review Checklist
 
@@ -46,3 +47,4 @@ Reviewers (human or agent) must verify **all** of the following before approving
 - [ ] **Error & rollback paths** — Failures are handled explicitly; partial apply does not leave an unsafe or unexplained state; errors propagate clearly.
 - [ ] **Windows security / ACL correctness** — Binaries and config remain `SYSTEM` + `Administrators` only; no privilege escalation or ACL weakening; Standard User cannot tamper with agent assets.
 - [ ] **Test coverage** — Unit tests cover new logic and edge cases; Windows E2E acceptance coverage exists or is extended for enforcement/ACL-affecting behavior; CI is green.
+- [ ] **README / docs currency** — If the PR changes user-visible behaviour, install/upgrade steps, config keys, env vars, CLI flags, release artifacts, or an HTTP/MCP API, `README.md` (and `docs/` when design changes) are updated in this PR; otherwise reject.

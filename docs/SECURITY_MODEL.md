@@ -16,7 +16,7 @@ Therefore the product assumes the network and backends are hostile unless crypto
 | Invariant | Requirement |
 | --- | --- |
 | Tenant isolation | Every persisted record and API decision is scoped by `tenant_id`. Cross-tenant reads/writes are impossible (return not-found, never leak existence across tenants). |
-| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane API keys use `dj_pat_`; user sessions use `dj_ses_` (cookie `dj_session`). Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. User passwords use **argon2id** (never returned in API JSON). See [Token formats](#token-formats-dj_agt--dj_pat_) below. |
+| Split tokens | Agent credentials use `dj_agt_` prefixes; control-plane API keys use `dj_pat_`; user sessions use `dj_ses_` (cookie `dj_session`). Wrong prefix for an API surface is rejected. Secrets are stored as **SHA-256 hashes only**, compared in constant time, and **never logged**. User passwords use **argon2id** (never returned in API JSON). See [Token formats](#token-formats-dj_agt_--dj_pat_) below. |
 | Transport | Outbound agent/control HTTPS uses system CA verification. Cleartext is rejected except loopback test doubles. |
 | Job containment | Remote jobs have short TTLs, run inside a Windows Job Object with hard timeouts, and truncate stdout/stderr (output caps). |
 | Audit | Sensitive actions append to append-only `audit_logs` (token issue/revoke, policy mutations, job launch/result). |
