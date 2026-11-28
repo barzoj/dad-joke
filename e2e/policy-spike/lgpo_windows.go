@@ -169,13 +169,18 @@ func restoreLocalGPO(t testing.TB, b *lgpoBackup) {
 
 func refreshPolicy(t testing.TB) (latency time.Duration, via string, err error) {
 	t.Helper()
+	// Drop CSE history so a version bump is not ignored against a stale cache.
+	_, _ = powershell(t, `
+$ErrorActionPreference='SilentlyContinue'
+Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\History\*' -Recurse -Force
+`)
 	start := time.Now()
-	out, err := runCmd("gpupdate.exe", "/force")
+	out, err := runCmd("gpupdate.exe", "/Target:Computer", "/Force")
+	out2, err2 := runCmd("gpupdate.exe", "/Target:User", "/Force")
 	lat := time.Since(start)
-	if err != nil {
-		return lat, "gpupdate", fmt.Errorf("gpupdate: %s", fmtErr(out, err))
+	if err != nil && err2 != nil {
+		return lat, "gpupdate", fmt.Errorf("gpupdate computer: %s; user: %s", fmtErr(out, err), fmtErr(out2, err2))
 	}
-	// Also try RefreshPolicyEx via userenv for comparison path.
 	_, _ = powershell(t, `
 Add-Type -TypeDefinition @"
 using System;
@@ -185,8 +190,8 @@ public class NativeGP {
   public static extern bool RefreshPolicyEx(bool bMachine, uint dwOptions);
 }
 "@
-[void][NativeGP]::RefreshPolicyEx($true, 0)
-[void][NativeGP]::RefreshPolicyEx($false, 0)
+[void][NativeGP]::RefreshPolicyEx($true, 1)
+[void][NativeGP]::RefreshPolicyEx($false, 1)
 `)
 	return lat, "gpupdate+RefreshPolicyEx", nil
 }
@@ -264,9 +269,11 @@ func setRegDWORD(t testing.TB, path, name string, val uint32) {
 	t.Helper()
 	mustPS(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
-New-Item -Path %s -Force | Out-Null
-New-ItemProperty -Path %s -Name %s -PropertyType DWord -Value %d -Force | Out-Null
-`, quotePS(path), quotePS(path), quotePS(name), val))
+if (-not (Test-Path -LiteralPath %s)) {
+  $null = New-Item -Path %s -Force
+}
+$null = New-ItemProperty -Path %s -Name %s -PropertyType DWord -Value %d -Force
+`, quotePS(path), quotePS(path), quotePS(path), quotePS(name), val))
 }
 
 func deleteRegValue(t testing.TB, path, name string) {

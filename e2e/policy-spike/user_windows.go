@@ -20,23 +20,27 @@ type testUser struct {
 func createStandardUser(t *testing.T) *testUser {
 	t.Helper()
 	name := "djspike_" + randomHex(4)
-	// net user prompts Y/N when password > 14 chars on some images.
-	pass := "Dj!" + randomHex(5) // 3+10=13 chars
+	// Alphanumeric only — avoids net-user / scheduled-task quoting pitfalls.
+	// Length ≤14. Meets complexity via mixed case + digit.
+	pass := "Dj9" + randomHex(5) // 3+10 = 13
 	if len(pass) > 14 {
 		pass = pass[:14]
 	}
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-net user %s %s /add | Out-Null
-$ErrorActionPreference = 'Continue'
-net localgroup Administrators %s /delete 2>&1 | Out-Null
-$admins = net localgroup Administrators
-if ($admins -match ('(?i)^\s*' + [regex]::Escape(%s) + '\s*$')) {
-  throw 'user unexpectedly in Administrators'
-}
-$sid = (New-Object System.Security.Principal.NTAccount(%s)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+$name = %s
+$pass = ConvertTo-SecureString -String %s -AsPlainText -Force
+# Remove leftover account if a prior run leaked it.
+Get-LocalUser -Name $name -ErrorAction SilentlyContinue | Remove-LocalUser -ErrorAction SilentlyContinue
+New-LocalUser -Name $name -Password $pass -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires | Out-Null
+Add-LocalGroupMember -Group 'Users' -Member $name -ErrorAction SilentlyContinue
+# Ensure not elevated.
+Remove-LocalGroupMember -Group 'Administrators' -Member $name -ErrorAction SilentlyContinue
+$admins = Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+if ($admins -match [regex]::Escape($name)) { throw 'user unexpectedly in Administrators' }
+$sid = (New-Object System.Security.Principal.NTAccount($name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
 Write-Output $sid
-`, name, pass, name, quotePS(name), quotePS(name)))
+`, quotePS(name), quotePS(pass)))
 	if err != nil {
 		t.Fatalf("create user %s: %v\n%s", name, err, out)
 	}
@@ -53,15 +57,14 @@ func cleanupUser(t testing.TB, u *testUser) {
 	}
 	_, _ = powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='SilentlyContinue'
-# Log off any sessions owned by the user before delete.
-$query = query user 2>$null
 Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
-  Where-Object { $_.UserName -and $_.UserName -like ('*\' + %s) } |
+  Where-Object { $_.UserName -and ($_.UserName -like ('*\' + %s) -or $_.UserName -eq %s) } |
   Stop-Process -Force -ErrorAction SilentlyContinue
-net user %s /delete | Out-Null
+Get-LocalUser -Name %s -ErrorAction SilentlyContinue | Remove-LocalUser -ErrorAction SilentlyContinue
+net user %s /delete 2>$null | Out-Null
 Remove-Item -LiteralPath ('C:\Users\' + %s) -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath ('C:\Windows\System32\GroupPolicyUsers\' + %s) -Recurse -Force -ErrorAction SilentlyContinue
-`, quotePS(u.Name), u.Name, quotePS(u.Name), quotePS(u.SID)))
+`, quotePS(u.Name), quotePS(u.Name), quotePS(u.Name), u.Name, quotePS(u.Name), quotePS(u.SID)))
 }
 
 func randomHex(nBytes int) string {
@@ -72,25 +75,55 @@ func randomHex(nBytes int) string {
 
 func loadUserHive(t testing.TB, u *testUser) (hivePath string, unload func()) {
 	t.Helper()
-	// Ensure profile exists via a network logon / scheduled task touch.
+	// Create the profile via LoadUserProfile after an interactive LogonUser.
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
-$u = %s; $p = %s
-# Create profile by running a short process as the user (scheduled task).
-$task = 'djspike_prof_' + [guid]::NewGuid().ToString('N').Substring(0,8)
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c echo ok > %%TEMP%%\djspike_prof.txt'
-$principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Password -RunLevel Limited
-Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
-try {
-  Set-ScheduledTask -TaskName $task -User $u -Password $p | Out-Null
-  Start-ScheduledTask -TaskName $task
-  Start-Sleep -Seconds 2
-} finally {
-  Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class NativeProfile {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROFILEINFO {
+    public int dwSize;
+    public int dwFlags;
+    [MarshalAs(UnmanagedType.LPTStr)] public string lpUserName;
+    [MarshalAs(UnmanagedType.LPTStr)] public string lpProfilePath;
+    [MarshalAs(UnmanagedType.LPTStr)] public string lpDefaultPath;
+    [MarshalAs(UnmanagedType.LPTStr)] public string lpServerName;
+    [MarshalAs(UnmanagedType.LPTStr)] public string lpPolicyPath;
+    public IntPtr hProfile;
+  }
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool LogonUser(string user, string domain, string pass, int type, int provider, out IntPtr token);
+  [DllImport("userenv.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool LoadUserProfile(IntPtr hToken, ref PROFILEINFO lpProfileInfo);
+  [DllImport("userenv.dll", SetLastError=true)]
+  public static extern bool UnloadUserProfile(IntPtr hToken, IntPtr hProfile);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool CloseHandle(IntPtr h);
 }
+"@
+$u = %s; $p = %s
+$token = [IntPtr]::Zero
+if (-not [NativeProfile]::LogonUser($u, '.', $p, 2, 0, [ref]$token)) {
+  if (-not [NativeProfile]::LogonUser($u, '.', $p, 3, 0, [ref]$token)) {
+    throw "LogonUser failed: $([ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)"
+  }
+}
+$pi = New-Object NativeProfile+PROFILEINFO
+$pi.dwSize = [Runtime.InteropServices.Marshal]::SizeOf($pi)
+$pi.lpUserName = $u
+if (-not [NativeProfile]::LoadUserProfile($token, [ref]$pi)) {
+  $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+  [NativeProfile]::CloseHandle($token) | Out-Null
+  throw "LoadUserProfile failed: $([ComponentModel.Win32Exception]::new($err).Message)"
+}
+# Persist token+profile handles for unload via env files is awkward; use ProfileList path + reg load instead.
+[NativeProfile]::UnloadUserProfile($token, $pi.hProfile) | Out-Null
+[NativeProfile]::CloseHandle($token) | Out-Null
 $sid = %s
-$prof = (Get-ItemProperty -Path ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid) -ErrorAction SilentlyContinue).ProfileImagePath
-if (-not $prof) { throw 'profile path missing after task' }
+$prof = (Get-ItemProperty -Path ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid)).ProfileImagePath
+if (-not $prof) { throw 'profile path missing' }
 Write-Output $prof
 `, quotePS(u.Name), quotePS(u.Password), quotePS(u.SID)))
 	if err != nil {
@@ -110,7 +143,7 @@ Write-Output 'ok'
 	unload = func() {
 		_, _ = powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='SilentlyContinue'
-[gc]::Collect(); Start-Sleep -Milliseconds 200
+[gc]::Collect(); Start-Sleep -Milliseconds 300
 reg unload %s | Out-Null
 `, quotePS(mount)))
 	}

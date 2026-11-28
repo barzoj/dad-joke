@@ -107,7 +107,11 @@ func runAsUser(t testing.TB, u *testUser, exe string, args []string, wait time.D
 	}
 	defer primary.Close()
 
-	outDir := t.TempDir()
+	outDir := filepath.Join(`C:\Windows\Temp`, "djspike_out_"+randomHex(4))
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return -1, "", err
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
 	outFile := filepath.Join(outDir, "out.txt")
 	cmdline := buildCmdline(exe, args, outFile)
 
@@ -177,7 +181,10 @@ func quoteArg(s string) string {
 
 func runAsUserViaTask(t testing.TB, u *testUser, exe string, args []string, wait time.Duration) (int, string, error) {
 	t.Helper()
-	outFile := filepath.Join(t.TempDir(), "task_out.txt")
+	taskOutDir := filepath.Join(`C:\Windows\Temp`, "djspike_task_"+randomHex(4))
+	_ = os.MkdirAll(taskOutDir, 0o755)
+	t.Cleanup(func() { _ = os.RemoveAll(taskOutDir) })
+	outFile := filepath.Join(taskOutDir, "task_out.txt")
 	argLine := ""
 	for _, a := range args {
 		argLine += " " + quoteArg(a)

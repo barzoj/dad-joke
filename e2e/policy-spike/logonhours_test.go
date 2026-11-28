@@ -75,11 +75,14 @@ Write-Output ('TIMES_SPEC=' + %s)
 		utcNote = "LoginHours hex=" + trimPref(out, "LOGINHOURS_HEX=") + "; treat standalone SAM as local-time unless proven UTC"
 	}
 
-	// LogonHoursAction policy (force logoff) — set and document that standalone
-	// Windows does NOT forcibly log off active sessions for logon hours.
-	setRegDWORD(t, `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`, "ForceUnlockLogon", 0) // unrelated touch avoided
-	lhPath := `HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System`
-	setRegDWORD(t, lhPath, "LogonHoursAction", 1) // 1 = lock / force logoff policy value used by some ADMX
+	// LogonHoursAction under Software\Policies (classic Policies\System can be ACL-locked).
+	// Standalone Windows still does NOT forcibly log off active sessions when hours expire.
+	lhPath := `HKLM:\Software\Policies\Microsoft\Windows\System`
+	_, lhOutErr := powershell(t, fmt.Sprintf(`
+$ErrorActionPreference='Stop'
+if (-not (Test-Path -LiteralPath %s)) { New-Item -Path %s -Force | Out-Null }
+New-ItemProperty -Path %s -Name 'LogonHoursAction' -PropertyType DWord -Value 1 -Force | Out-Null
+`, quotePS(lhPath), quotePS(lhPath), quotePS(lhPath)))
 	t.Cleanup(func() { deleteRegValue(t, lhPath, "LogonHoursAction") })
 
 	recordFinding(Finding{
@@ -90,7 +93,7 @@ Write-Output ('TIMES_SPEC=' + %s)
 		NeedsRelogon:    "n/a (affects new logons)",
 		NeedsReboot:     "no",
 		VisibleGpresult: "n/a (SAM account attribute)",
-		Gotchas:         fmt.Sprintf("times=%s denied=%v err=%s; LogonHoursAction set but standalone Windows does NOT auto-logoff active sessions for hours expiry — agent must WTSLogoffSession", timesSpec, denied, errno),
+		Gotchas:         fmt.Sprintf("times=%s denied=%v err=%s; LogonHoursAction write err=%v; standalone Windows does NOT auto-logoff active sessions for hours expiry — agent must WTSLogoffSession", timesSpec, denied, errno, lhOutErr),
 		ClientSKUNote:   utcNote,
 	})
 

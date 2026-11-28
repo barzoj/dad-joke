@@ -30,26 +30,33 @@ type PolEntry struct {
 	Data  []byte
 }
 
-// EncodePol builds a Registry.pol body (MS-GPREG).
-// Key/Value/brackets/semicolons are UTF-16LE; Type/Size are uint32 LE; Data is raw.
+// EncodePol builds a Registry.pol body (MS-GPREG / Quid / GPRegistryPolicyParser).
+// Delimiters [, ;, ] are single UTF-16LE code units (NOT null-terminated).
+// Key and Value are UTF-16LE null-terminated. Type and Size are uint32 LE.
 func EncodePol(entries []PolEntry) []byte {
 	var b bytes.Buffer
 	b.Write(polSignature)
 	_ = binary.Write(&b, binary.LittleEndian, uint32(1))
 	for _, e := range entries {
-		writeUTF16Z(&b, "[")
+		writeUTF16Char(&b, '[')
 		writeUTF16Z(&b, e.Key)
-		writeUTF16Z(&b, ";")
+		writeUTF16Char(&b, ';')
 		writeUTF16Z(&b, e.Value)
-		writeUTF16Z(&b, ";")
+		writeUTF16Char(&b, ';')
 		_ = binary.Write(&b, binary.LittleEndian, e.Type)
-		writeUTF16Z(&b, ";")
+		writeUTF16Char(&b, ';')
 		_ = binary.Write(&b, binary.LittleEndian, uint32(len(e.Data)))
-		writeUTF16Z(&b, ";")
+		writeUTF16Char(&b, ';')
 		b.Write(e.Data)
-		writeUTF16Z(&b, "]")
+		writeUTF16Char(&b, ']')
 	}
 	return b.Bytes()
+}
+
+func writeUTF16Char(b *bytes.Buffer, r rune) {
+	var enc [2]byte
+	binary.LittleEndian.PutUint16(enc[:], uint16(r))
+	b.Write(enc[:])
 }
 
 func writeUTF16Z(b *bytes.Buffer, s string) {
@@ -75,7 +82,7 @@ func szData(s string) []byte {
 	return encodeUTF16Z(s)
 }
 
-// ParsePol reads Registry.pol entries (best-effort for spike assertions).
+// ParsePol reads Registry.pol entries.
 func ParsePol(data []byte) ([]PolEntry, error) {
 	if len(data) < 8 || !bytes.Equal(data[:4], polSignature) {
 		return nil, fmt.Errorf("bad Registry.pol signature")
@@ -87,69 +94,58 @@ func ParsePol(data []byte) ([]PolEntry, error) {
 	i := 8
 	var out []PolEntry
 	for i < len(data) {
-		if _, n, err := readUTF16Z(data[i:]); err != nil || n == 0 {
+		if i+2 > len(data) {
 			break
-		} else {
-			// expect "["
-			s, n, err := readUTF16Z(data[i:])
-			if err != nil {
-				return out, err
-			}
-			if s != "[" {
-				return out, fmt.Errorf("expected '[' at %d, got %q", i, s)
-			}
-			i += n
 		}
+		if binary.LittleEndian.Uint16(data[i:]) != '[' {
+			return out, fmt.Errorf("expected '[' at %d", i)
+		}
+		i += 2
 		key, n, err := readUTF16Z(data[i:])
 		if err != nil {
 			return out, err
 		}
 		i += n
-		semi, n, err := readUTF16Z(data[i:])
-		if err != nil || semi != ";" {
+		if i+2 > len(data) || binary.LittleEndian.Uint16(data[i:]) != ';' {
 			return out, fmt.Errorf("expected ';' after key")
 		}
-		i += n
+		i += 2
 		val, n, err := readUTF16Z(data[i:])
 		if err != nil {
 			return out, err
 		}
 		i += n
-		semi, n, err = readUTF16Z(data[i:])
-		if err != nil || semi != ";" {
+		if i+2 > len(data) || binary.LittleEndian.Uint16(data[i:]) != ';' {
 			return out, fmt.Errorf("expected ';' after value")
 		}
-		i += n
+		i += 2
 		if i+4 > len(data) {
 			return out, fmt.Errorf("truncated type")
 		}
 		typ := binary.LittleEndian.Uint32(data[i:])
 		i += 4
-		semi, n, err = readUTF16Z(data[i:])
-		if err != nil || semi != ";" {
+		if i+2 > len(data) || binary.LittleEndian.Uint16(data[i:]) != ';' {
 			return out, fmt.Errorf("expected ';' after type")
 		}
-		i += n
+		i += 2
 		if i+4 > len(data) {
 			return out, fmt.Errorf("truncated size")
 		}
 		sz := binary.LittleEndian.Uint32(data[i:])
 		i += 4
-		semi, n, err = readUTF16Z(data[i:])
-		if err != nil || semi != ";" {
+		if i+2 > len(data) || binary.LittleEndian.Uint16(data[i:]) != ';' {
 			return out, fmt.Errorf("expected ';' after size")
 		}
-		i += n
+		i += 2
 		if i+int(sz) > len(data) {
 			return out, fmt.Errorf("truncated data")
 		}
 		d := append([]byte(nil), data[i:i+int(sz)]...)
 		i += int(sz)
-		closeB, n, err := readUTF16Z(data[i:])
-		if err != nil || closeB != "]" {
+		if i+2 > len(data) || binary.LittleEndian.Uint16(data[i:]) != ']' {
 			return out, fmt.Errorf("expected ']'")
 		}
-		i += n
+		i += 2
 		out = append(out, PolEntry{Key: key, Value: val, Type: typ, Data: d})
 	}
 	return out, nil

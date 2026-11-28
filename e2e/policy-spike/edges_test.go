@@ -165,8 +165,9 @@ func TestEdges_AppIDSvcStopped(t *testing.T) {
 	})
 
 	// With AppIDSvc stopped, Set-AppLockerPolicy may still write rules but enforcement is off.
-	xmlPath := filepath.Join(t.TempDir(), "al.xml")
+	xmlPath := filepath.Join(`C:\Windows\Temp`, "djspike_al_edge_"+randomHex(3)+".xml")
 	_ = os.WriteFile(xmlPath, []byte(`<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"></RuleCollection></AppLockerPolicy>`), 0o644)
+	t.Cleanup(func() { _ = os.Remove(xmlPath) })
 	out, err := powershell(t, fmt.Sprintf(`Set-AppLockerPolicy -XmlPolicy %s -ErrorAction Continue 2>&1 | Out-String`, quotePS(xmlPath)))
 
 	recordFinding(Finding{

@@ -47,10 +47,16 @@ Copy-Item -Force -Path $env:WINDIR\System32\notepad.exe -Destination %s
     </FilePathRule>
   </RuleCollection>
 </AppLockerPolicy>`, guidV4(), guidV4(), u.SID, strings.ReplaceAll(probeExe, `\`, `\\`))
-	xmlPath := filepath.Join(t.TempDir(), "al.xml")
+	// Avoid t.TempDir — hosted images have denied CreateFile under the user temp tree.
+	xmlDir := os.Getenv("RUNNER_TEMP")
+	if xmlDir == "" {
+		xmlDir = `C:\Windows\Temp`
+	}
+	xmlPath := filepath.Join(xmlDir, "djspike_al_"+randomHex(4)+".xml")
 	if err := os.WriteFile(xmlPath, []byte(xml), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Remove(xmlPath) })
 	start := time.Now()
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
