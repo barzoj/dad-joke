@@ -80,7 +80,9 @@ func randomHex(nBytes int) string {
 	return hex.EncodeToString(b)
 }
 
-func loadUserHive(t testing.TB, u *testUser) (hivePath string, unload func()) {
+// ensureUserProfile creates the local profile (ProfileList + NTUSER.DAT) via
+// LogonUser + LoadUserProfile, then unloads it. Idempotent.
+func ensureUserProfile(t testing.TB, u *testUser) string {
 	t.Helper()
 	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
@@ -109,7 +111,12 @@ public class NativeProfile {
   public static extern bool CloseHandle(IntPtr h);
 }
 "@
-$u = %s; $p = %s
+$u = %s; $p = %s; $sid = %s
+$existing = Get-ItemProperty -Path ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid) -ErrorAction SilentlyContinue
+if ($existing -and $existing.ProfileImagePath -and (Test-Path -LiteralPath (Join-Path $existing.ProfileImagePath 'NTUSER.DAT'))) {
+  Write-Output $existing.ProfileImagePath
+  exit 0
+}
 $token = [IntPtr]::Zero
 if (-not [NativeProfile]::LogonUser($u, '.', $p, 2, 0, [ref]$token)) {
   if (-not [NativeProfile]::LogonUser($u, '.', $p, 3, 0, [ref]$token)) {
@@ -126,18 +133,22 @@ if (-not [NativeProfile]::LoadUserProfile($token, [ref]$pi)) {
 }
 [NativeProfile]::UnloadUserProfile($token, $pi.hProfile) | Out-Null
 [NativeProfile]::CloseHandle($token) | Out-Null
-$sid = %s
 $prof = (Get-ItemProperty -Path ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid)).ProfileImagePath
 if (-not $prof) { throw 'profile path missing' }
 Write-Output $prof
 `, quotePS(u.Name), quotePS(u.Password), quotePS(u.SID)))
 	if err != nil {
-		t.Fatalf("create profile: %v\n%s", err, out)
+		t.Fatalf("ensure profile: %v\n%s", err, out)
 	}
-	prof := strings.TrimSpace(out)
+	return strings.TrimSpace(out)
+}
+
+func loadUserHive(t testing.TB, u *testUser) (hivePath string, unload func()) {
+	t.Helper()
+	prof := ensureUserProfile(t, u)
 	ntuser := prof + `\NTUSER.DAT`
 	mount := `HKU\djspike_` + randomHex(3)
-	out, err = powershell(t, fmt.Sprintf(`
+	out, err := powershell(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
 reg load %s %s | Out-Null
 Write-Output 'ok'

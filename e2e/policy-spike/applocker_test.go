@@ -141,17 +141,17 @@ New-ItemProperty -Path %s -Name 'SpikeProbe' -PropertyType String -Value %s -For
 	polLat := time.Since(polStart)
 	polPresent, _, _ := regDWORDExists(t, srpRoot, "EnforcementMode")
 
-	// User-writable path trap
+	// User-writable path trap (profile must exist first — net user /add alone does not).
+	profPath := ensureUserProfile(t, u)
 	localApp := mustPS(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
-$sid = %s
-$prof = (Get-ItemProperty -Path ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid)).ProfileImagePath
+$prof = %s
 $p = Join-Path $prof 'AppData\Local\DadJokeSpike'
 New-Item -ItemType Directory -Force -Path $p | Out-Null
 $dst = Join-Path $p 'user_probe.exe'
 Copy-Item -Force -Path $env:WINDIR\System32\notepad.exe -Destination $dst
 Write-Output $dst
-`, quotePS(u.SID)))
+`, quotePS(profPath)))
 	writableTrap := fmt.Sprintf("user-writable probe at %s — path-based allow rules under %%LOCALAPPDATA%% can be replaced by the user; prefer publisher/hash rules or block user-writable roots", localApp)
 
 	// AppIDSvc stopped behavior
