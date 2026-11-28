@@ -468,10 +468,81 @@ func TestBackoffSequenceAndCap(t *testing.T) {
 		t.Fatalf("facts must stay bounded at 10, got %d", sink.count())
 	}
 
-	// Next session event clears cap and allows relaunch.
-	events <- service.Event{Kind: service.EventSessionUnlock, SessionID: 1}
+	// Logon clears cap and allows relaunch (Lock/Unlock must not — see dedicated test).
+	events <- service.Event{Kind: service.EventSessionLogon, SessionID: 1}
 	waitLaunch(t, launch, before+1)
 
+	cancel()
+}
+
+func TestPowerResumeClearsRelaunchCap(t *testing.T) {
+	t.Parallel()
+	events := make(chan service.Event, 4)
+	clock := newMemClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	launch := newFakeLauncher(1)
+	src := &fixedSessions{list: []Session{{ID: 1, UserName: "a"}}}
+	s := &Supervisor{
+		Events: events, Sessions: src, Launcher: launch, Sink: &recordingSink{},
+		Clock: clock, Log: NopLogger{}, StopBudget: time.Second,
+	}
+	cancel, _ := startSup(t, s)
+	waitLaunch(t, launch, 1)
+
+	// Hit the relaunch cap.
+	for i := 0; i < relaunchMaxInWindow; i++ {
+		before := launch.launchCount()
+		launch.lastChild().kill()
+		waitLaunch(t, launch, before+1)
+	}
+	cappedAt := launch.launchCount()
+	launch.lastChild().kill()
+	time.Sleep(80 * time.Millisecond)
+	if launch.launchCount() != cappedAt {
+		t.Fatalf("expected capped; got %d want %d", launch.launchCount(), cappedAt)
+	}
+
+	// AC #5: after resume the agent must come back even when capped.
+	events <- service.Event{Kind: service.EventPowerResume}
+	waitLaunch(t, launch, cappedAt+1)
+	cancel()
+}
+
+func TestLockUnlockDoesNotClearRelaunchCap(t *testing.T) {
+	t.Parallel()
+	events := make(chan service.Event, 64)
+	clock := newMemClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	launch := newFakeLauncher(1)
+	sink := &recordingSink{}
+	src := &fixedSessions{list: []Session{{ID: 1, UserName: "a"}}}
+	s := &Supervisor{
+		Events: events, Sessions: src, Launcher: launch, Sink: sink,
+		Clock: clock, Log: NopLogger{}, StopBudget: time.Second,
+	}
+	cancel, _ := startSup(t, s)
+	waitLaunch(t, launch, 1)
+
+	for i := 0; i < relaunchMaxInWindow; i++ {
+		before := launch.launchCount()
+		launch.lastChild().kill()
+		waitLaunch(t, launch, before+1)
+	}
+	cappedAt := launch.launchCount()
+	factsAtCap := sink.count()
+	launch.lastChild().kill()
+	time.Sleep(50 * time.Millisecond)
+
+	// AC #9: lock/unlock storms must not re-arm another relaunch window.
+	for i := 0; i < 30; i++ {
+		events <- service.Event{Kind: service.EventSessionLock, SessionID: 1}
+		events <- service.Event{Kind: service.EventSessionUnlock, SessionID: 1}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if launch.launchCount() != cappedAt {
+		t.Fatalf("lock/unlock cleared cap: launches %d -> %d", cappedAt, launch.launchCount())
+	}
+	if sink.count() != factsAtCap {
+		t.Fatalf("lock/unlock flooded restarted facts: %d -> %d", factsAtCap, sink.count())
+	}
 	cancel()
 }
 

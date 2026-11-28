@@ -151,6 +151,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
+// Cap-reset policy (AC #5 / #9):
+//   - Clears relaunch cap: PowerResume (all sessions), SessionLogon,
+//     ConsoleConnect, RemoteConnect.
+//   - Does NOT clear cap: SessionLock, SessionUnlock, ConsoleDisconnect,
+//     RemoteDisconnect (crash-storm guard).
 func (s *Supervisor) handleEvent(ctx context.Context, ev service.Event) {
 	s.mu.Lock()
 	if s.stopped {
@@ -164,20 +169,37 @@ func (s *Supervisor) handleEvent(ctx context.Context, ev service.Event) {
 		if s.OnPowerResume != nil {
 			s.OnPowerResume()
 		}
+		s.clearAllRelaunchCaps()
 		s.reconcile(ctx)
 	case service.EventSessionLogoff:
 		s.terminateSession(ev.SessionID)
 		s.reconcile(ctx)
-	default:
-		// Logon/lock/unlock/connect/disconnect: level-triggered reconcile.
+	case service.EventSessionLogon, service.EventConsoleConnect, service.EventRemoteConnect:
 		if ev.SessionID != 0 {
-			s.mu.Lock()
-			if t := s.children[ev.SessionID]; t != nil {
-				t.backoff.clearCapOnEvent()
-			}
-			s.mu.Unlock()
+			s.clearRelaunchCap(ev.SessionID)
 		}
 		s.reconcile(ctx)
+	default:
+		// Lock/Unlock/Disconnect: level-triggered reconcile only — keep cap.
+		s.reconcile(ctx)
+	}
+}
+
+func (s *Supervisor) clearRelaunchCap(sessionID uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t := s.children[sessionID]; t != nil {
+		t.backoff.clearCapOnEvent()
+	}
+}
+
+func (s *Supervisor) clearAllRelaunchCaps() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.children {
+		if t != nil {
+			t.backoff.clearCapOnEvent()
+		}
 	}
 }
 

@@ -14,6 +14,8 @@
 //     interactive session that has a user token. Reconcile is level-triggered
 //     on SCM events (service.Event) and child exits. Child identity is the
 //     process handle the service created — never a remembered PID.
+//     Relaunch-cap reset events: PowerResume, SessionLogon, ConsoleConnect,
+//     RemoteConnect. Lock/Unlock/Disconnect do not clear the cap.
 //
 // OS calls stay behind winsess.Launcher and SessionSource. Fact markers
 // (`session.restarted`) go through RestartSink.

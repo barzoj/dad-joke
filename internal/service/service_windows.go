@@ -77,7 +77,9 @@ func (h *scmHandler) forwardSessionChange(req svc.ChangeRequest) {
 	if req.EventData == 0 {
 		return
 	}
-	notif := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Pointer(req.EventData))
+	// SCM passes EventData as a pointer-sized integer. unsafe.Add is the
+	// supported single-expression conversion (go vet rejects unsafe.Pointer(uintptr)).
+	notif := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Add(unsafe.Pointer(nil), req.EventData))
 	ev, ok := TranslateSessionChange(req.EventType, notif.SessionID)
 	if !ok {
 		return

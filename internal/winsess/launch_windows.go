@@ -5,9 +5,6 @@ package winsess
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -169,31 +166,4 @@ func (c *winChild) Close() error {
 	err := windows.CloseHandle(c.h)
 	c.h = 0
 	return err
-}
-
-func terminateOrphans(sessionID uint32, exePath string) error {
-	want := strings.ToLower(filepath.Base(exePath))
-	if want == "" {
-		want = "dad-joke.exe"
-	}
-	procs, err := platformSource{}.Processes(context.Background())
-	if err != nil {
-		return err
-	}
-	for _, p := range procs {
-		if p.SessionID != sessionID {
-			continue
-		}
-		if strings.ToLower(p.Exe) != want {
-			continue
-		}
-		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, p.PID)
-		if err != nil {
-			continue
-		}
-		_ = windows.TerminateProcess(h, 1)
-		_, _ = windows.WaitForSingleObject(h, uint32((5 * time.Second).Milliseconds()))
-		_ = windows.CloseHandle(h)
-	}
-	return nil
 }

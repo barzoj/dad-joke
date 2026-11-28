@@ -15,8 +15,7 @@ import (
 // TestT21_SessionAgentLaunchAndSupervision covers Issue #44 acceptance:
 // launch on interactive session, kill→restart + session.restarted, service
 // restart uniqueness, service stop cleanup, and no secrets for the session
-// agent. Logoff/sleep/FUS automation is skipped when the runner cannot drive
-// those SCM scenarios — covered by unit tests (stated in the PR).
+// agent. Logoff/sleep/FUS automation is covered by unit tests (stated in the PR).
 func TestT21_SessionAgentLaunchAndSupervision(t *testing.T) {
 	bin := testBinary(t)
 	cleanupInstall(t, bin)
@@ -38,9 +37,7 @@ func TestT21_SessionAgentLaunchAndSupervision(t *testing.T) {
 	}
 	waitServiceState(t, "Running", 60*time.Second)
 
-	if !hasInteractiveSession(t) {
-		t.Skip("no interactive user session on this runner; session-agent launch/kill/restart covered by unit tests")
-	}
+	requireInteractiveSession(t)
 
 	pid := waitSessionAgent(t, 45*time.Second)
 	cmdLine := sessionAgentCommandLine(t, pid)
@@ -52,6 +49,22 @@ func TestT21_SessionAgentLaunchAndSupervision(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(cmdLine), "session") {
 		t.Fatalf("command line missing session: %s", cmdLine)
+	}
+
+	owner, err := processOwnerName(uint32(pid))
+	if err != nil {
+		t.Fatalf("process owner: %v", err)
+	}
+	if isSystemAccount(owner) {
+		t.Fatalf("session agent owner=%q; want interactive user, not SYSTEM", owner)
+	}
+
+	hasSecret, hits, err := processEnvHasDadJokePrefix(uint32(pid))
+	if err != nil {
+		t.Fatalf("read session agent env: %v", err)
+	}
+	if hasSecret {
+		t.Fatalf("session agent env has DAD_JOKE_* vars: %v", hits)
 	}
 
 	// Kill → relaunch with new PID; mock should see session.restarted.
@@ -99,21 +112,47 @@ func TestT21_SessionAgentLaunchAndSupervision(t *testing.T) {
 	assertDenied("read facts state", attemptReadFileAs(user, pass, filepath.Join(factsDir, "state.json")))
 }
 
-func hasInteractiveSession(t *testing.T) bool {
+// requireInteractiveSession fails closed on Windows CI: missing interactive
+// session fails the test. Opt out only with DAD_JOKE_E2E_ALLOW_NO_SESSION=1.
+func requireInteractiveSession(t *testing.T) {
+	t.Helper()
+	ok, detail := detectInteractiveSession(t)
+	if ok {
+		return
+	}
+	if os.Getenv("DAD_JOKE_E2E_ALLOW_NO_SESSION") == "1" {
+		t.Skipf("no interactive user session (%s); DAD_JOKE_E2E_ALLOW_NO_SESSION=1", detail)
+	}
+	t.Fatalf("no interactive user session detected (%s); set DAD_JOKE_E2E_ALLOW_NO_SESSION=1 to skip on headless hosts", detail)
+}
+
+func detectInteractiveSession(t *testing.T) (ok bool, detail string) {
 	t.Helper()
 	out, err := powershell(t, `
-$ErrorActionPreference = 'SilentlyContinue'
-$sessions = quser 2>$null
-if (-not $sessions) { Write-Output 'no'; return }
-# quser header + at least one session row that is not Disc-only services.
-$rows = @($sessions | Select-Object -Skip 1)
-if ($rows.Count -lt 1) { Write-Output 'no'; return }
-Write-Output 'yes'
+$ErrorActionPreference = 'Stop'
+try {
+  $sessions = @(quser 2>&1)
+  if (-not $sessions -or $sessions.Count -lt 2) {
+    Write-Output 'no:quser-empty'
+    exit 0
+  }
+  Write-Output 'yes'
+} catch {
+  Write-Output ("no:" + $_.Exception.Message)
+  exit 0
+}
 `)
 	if err != nil {
-		return false
+		return false, "powershell error: " + err.Error()
 	}
-	return strings.TrimSpace(out) == "yes"
+	out = strings.TrimSpace(out)
+	if out == "yes" {
+		return true, "ok"
+	}
+	if out == "" {
+		return false, "empty detector output"
+	}
+	return false, out
 }
 
 func waitSessionAgent(t *testing.T, timeout time.Duration) int {
@@ -202,7 +241,6 @@ func waitForSessionRestartedFact(t *testing.T, mock *mockFactsAPI, timeout time.
 				strings.Contains(h.Body, `"kind": "session.restarted"`) {
 				return
 			}
-			// Also accept if still on disk only — check queue files.
 		}
 		if factOnDiskHasRestarted(t) {
 			return

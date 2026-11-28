@@ -3,6 +3,7 @@ package sessionagent
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -68,7 +69,7 @@ func (s *QueueSink) EnqueueRestarted(sessionID uint32) error {
 		}
 		facts := []agentapi.FactItem{restartedFact(now, sid)}
 		if dropped.Batches > 0 {
-			n := int32(dropped.Batches)
+			batches := clampToInt32(dropped.Batches)
 			b := dropped.Bytes
 			facts = append([]agentapi.FactItem{{
 				Ts:     now.UTC(),
@@ -76,7 +77,7 @@ func (s *QueueSink) EnqueueRestarted(sessionID uint32) error {
 				Plugin: "factsq",
 				DurS:   0,
 				Data: agentapi.FactData{
-					DroppedBatches: &n,
+					DroppedBatches: &batches,
 					DroppedBytes:   &b,
 				},
 			}}, facts...)
@@ -105,6 +106,17 @@ func restartedFact(now time.Time, sessionID string) agentapi.FactItem {
 			SessionId: &sessionID,
 		},
 	}
+}
+
+// clampToInt32 bounds-checks before converting int → int32 (gosec G115).
+func clampToInt32(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }
 
 func (s *QueueSink) loadConfig() (config.Config, error) {
