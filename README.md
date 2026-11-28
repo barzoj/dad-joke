@@ -274,7 +274,7 @@ Create an agent token on the server first (`dj_agt_…`). Then, from an elevated
 | Flag | Required | Notes |
 | --- | --- | --- |
 | `--token` | No | Backend-issued agent token (e.g. `dj_agt_…`). If omitted, a local 64-char hex token is generated and printed once. Empty/whitespace values are rejected. |
-| `--backend-url` | No | AgentAPI base URL. Must be `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`). No URL userinfo. Empty = local-only (no heartbeat / no facts upload; sampler still queues locally). |
+| `--backend-url` | No | AgentAPI base URL. Must be `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`). No URL userinfo. Empty = local-only (no heartbeat / no facts upload; sampler still queues non-empty batches locally). |
 | `--heartbeat-interval` | No | Seconds (≥ 1). Default when unset in config is `60`. |
 | `--sample-interval` | No | Facts sampling period in seconds (`15..300`). Default when unset in config is `60`. Preserved across reinstall/self-update unless this flag is passed. |
 

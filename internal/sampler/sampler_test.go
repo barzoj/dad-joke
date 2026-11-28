@@ -49,6 +49,18 @@ func testSampleCfg() config.Config {
 	return cfg
 }
 
+func oneSessionFact() []sensor.Fact {
+	sid := "S-1-5-21-1"
+	state := agentapi.Active
+	sessionID := "1"
+	uname := "kid"
+	return []sensor.Fact{{
+		Ts: time.Now().UTC(), Kind: agentapi.SessionState, Plugin: "sessions", DurS: 15,
+		UserSid: &sid,
+		Data:    agentapi.FactData{SessionId: &sessionID, Username: &uname, State: &state},
+	}}
+}
+
 func TestSampleEnqueuesBatchWithZone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -96,6 +108,38 @@ func TestSampleEnqueuesBatchWithZone(t *testing.T) {
 	_ = winsess.Default() // ensure package linked for stub
 }
 
+func TestSampleSkipsEmptyFactsNoEnqueue(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	q := &factsq.Queue{Dir: dir, Cap: 1 << 20, ApplyACL: func(string) error { return nil }}
+	if err := q.Open(); err != nil {
+		t.Fatal(err)
+	}
+	before := q.NextSeq()
+	cfg := testSampleCfg()
+	loop := &Loop{
+		Config:  &cfg,
+		Queue:   q,
+		Log:     NopLogger{},
+		Clock:   RealClock{},
+		Zone:    func(time.Time) (string, int32) { return "UTC", 0 },
+		Sensors: sensor.Registry{staticSensor{}}, // 0 facts
+	}
+	if err := loop.sampleOnce(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if q.NextSeq() != before {
+		t.Fatalf("NextSeq = %d, want unchanged %d", q.NextSeq(), before)
+	}
+	pending, err := q.PendingSeqs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %v, want empty (no enqueue)", pending)
+	}
+}
+
 func TestResetClearsSessions(t *testing.T) {
 	t.Parallel()
 	loop := New(nil)
@@ -132,7 +176,7 @@ func TestSampleContinuesOnENOSPC(t *testing.T) {
 		Log:     NopLogger{},
 		Clock:   RealClock{},
 		Zone:    func(time.Time) (string, int32) { return "UTC", 0 },
-		Sensors: sensor.Registry{staticSensor{}},
+		Sensors: sensor.Registry{staticSensor{facts: oneSessionFact()}},
 	}
 	if err := loop.sampleOnce(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -174,7 +218,7 @@ func TestSampleContinuesOnReadOnlyQueue(t *testing.T) {
 		Log:     NopLogger{},
 		Clock:   RealClock{},
 		Zone:    func(time.Time) (string, int32) { return "UTC", 0 },
-		Sensors: sensor.Registry{staticSensor{}},
+		Sensors: sensor.Registry{staticSensor{facts: oneSessionFact()}},
 	}
 	if err := loop.sampleOnce(context.Background(), cfg); err != nil {
 		t.Fatal(err)

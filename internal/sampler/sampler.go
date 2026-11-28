@@ -198,6 +198,13 @@ func (l *Loop) sampleOnce(ctx context.Context, cfg config.Config) error {
 	facts := l.Sensors.CollectAll(ctx, now, func(_ sensor.Sensor, err error) {
 		l.Log.Log("sampler: sensor error (continuing): %v", err)
 	})
+	// No keepalive empties: 0 facts would only burn seq / disk / cap headroom.
+	// Zone is carried by heartbeat. queue.dropped is only embedded when a real
+	// batch needs overflow headroom (EnqueueBuild), so there is nothing to
+	// report when the sensor slice is empty.
+	if len(facts) == 0 {
+		return nil
+	}
 
 	zone, offset := l.Zone(now)
 	var machineID openapi_types.UUID

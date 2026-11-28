@@ -10,4 +10,6 @@
 // Issue #16: TC-16 Restart-Service config+token persistence; Linux suite in e2e/linux.
 // Issue #43 / T-20: TC-20 facts sampler/uploader (sample-interval, queue ACL,
 // restart/Stop-Process stream continuity, offline deliver, lost-ack duplicate).
+// Headless Session 0 has no interactive sessions (sampler correctly skips empty
+// ticks); E2E seeds durable queue batch files while the service is stopped.
 package e2e_test
