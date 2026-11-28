@@ -165,6 +165,13 @@ func TestOpenAPI_FactsAndUsageContractShapes(t *testing.T) {
 	if !strings.Contains(factData, "idle_s:") || !strings.Contains(factData, "minimum: 0") {
 		t.Fatal("FactData idle_s missing minimum: 0")
 	}
+	if !strings.Contains(factData, "exes:") || !strings.Contains(factData, "ExeName") {
+		t.Fatal("FactData exes must reference ExeName (per-item maxLength)")
+	}
+	exeName := schemaBlock(t, agentText, "DadJoke.Common.ExeName")
+	if !strings.Contains(exeName, "maxLength: 260") {
+		t.Fatal("ExeName missing maxLength: 260 (exes item constraint)")
+	}
 
 	kindBlock := schemaBlock(t, agentText, "DadJoke.Common.FactKind")
 	wantKinds := []string{"session.state", "proc.sample", "fg.sample", "queue.dropped", "session.restarted"}

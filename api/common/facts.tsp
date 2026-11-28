@@ -66,6 +66,10 @@ enum FactSessionState {
   disconnected,
 }
 
+/** Windows image / short path name (≤ 260 characters). */
+@maxLength(260)
+scalar ExeName extends string;
+
 /**
  * Flat optional payload for a FactItem.
  * One model (not a polymorphic union) keeps oapi-codegen output simple;
@@ -88,11 +92,10 @@ model FactData {
    * Hard-capped at 200 items; each path/name ≤ 260 characters.
    */
   @maxItems(200)
-  exes?: string[];
+  exes?: ExeName[];
 
   /** Foreground executable name (required for `fg.sample`). */
-  @maxLength(260)
-  exe?: string;
+  exe?: ExeName;
 
   /** Full path of the foreground executable (optional on `fg.sample`). */
   @maxLength(1024)

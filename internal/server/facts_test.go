@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/barzoj/dad-joke/internal/server"
 	"github.com/barzoj/dad-joke/internal/store"
@@ -118,7 +119,6 @@ func TestFacts_BodySizeLimit(t *testing.T) {
 	machineID := uuid.NewString()
 	streamID := uuid.NewString()
 
-	// Oversized: 256 KiB + 1 → 413.
 	pad := strings.Repeat("x", store.FactBatchMaxBytes)
 	oversized := fmt.Sprintf(
 		`{"machine_id":%q,"stream_id":%q,"seq":1,"sent_at":"2026-11-28T12:00:00Z","time_zone":"UTC","utc_offset_minutes":0,"facts":[{"ts":"2026-11-28T12:00:00Z","kind":"proc.sample","plugin":"p","dur_s":0,"data":{"exes":[],"pad":%q}}]}`,
@@ -130,9 +130,6 @@ func TestFacts_BodySizeLimit(t *testing.T) {
 	}
 	assertErrorResponse(t, raw)
 
-	// Exactly FactBatchMaxBytes of body does not trip the facts limiter by itself
-	// when the JSON is valid and within the limit. Build a body of exactly the
-	// limit using a pad field sized so total UTF-8 length == FactBatchMaxBytes.
 	prefix := fmt.Sprintf(
 		`{"machine_id":%q,"stream_id":%q,"seq":1,"sent_at":"2026-11-28T12:00:00Z","time_zone":"UTC","utc_offset_minutes":0,"facts":[{"ts":"2026-11-28T12:00:00Z","kind":"session.restarted","plugin":"p","dur_s":0,"data":{"pad":"`,
 		machineID, streamID,
@@ -147,9 +144,194 @@ func TestFacts_BodySizeLimit(t *testing.T) {
 		t.Fatalf("exact len=%d want %d", len(exact), store.FactBatchMaxBytes)
 	}
 	code, raw = postFactsRaw(t, base, agent, []byte(exact))
-	// Stub returns 501 once the body is accepted by MaxBytesReader.
 	if code != http.StatusNotImplemented {
 		t.Fatalf("exact-size status=%d body=%s", code, raw)
 	}
 	assertErrorResponse(t, raw)
+}
+
+func TestContractNegatives_ProductionPath(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	_, pat := seedTenantPAT(t, st, "facts-neg-"+uuid.NewString()[:8])
+	base := startTestServer(t, st, server.Config{})
+	agent := createAgentToken(t, base, pat)
+	machineID := uuid.NewString()
+	streamID := uuid.NewString()
+
+	t.Run("heartbeat_missing_time_zone_400", func(t *testing.T) {
+		t.Parallel()
+		code, raw := postHeartbeat(t, base, agent, map[string]any{
+			"machine_id":             machineID,
+			"agent_version":          "0.0.1",
+			"hostname":               "pc",
+			"os_version":             "Win",
+			"applied_policy_version": 0,
+		})
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("heartbeat_empty_time_zone_400", func(t *testing.T) {
+		t.Parallel()
+		code, raw := postHeartbeat(t, base, agent, map[string]any{
+			"machine_id":             machineID,
+			"agent_version":          "0.0.1",
+			"hostname":               "pc",
+			"os_version":             "Win",
+			"applied_policy_version": 0,
+			"time_zone":              "",
+			"utc_offset_minutes":     0,
+		})
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	baseFact := func() map[string]any {
+		return map[string]any{
+			"machine_id":         machineID,
+			"stream_id":          streamID,
+			"seq":                1,
+			"sent_at":            "2026-11-28T12:00:00Z",
+			"time_zone":          "UTC",
+			"utc_offset_minutes": 0,
+			"facts": []any{
+				map[string]any{
+					"ts": "2026-11-28T12:00:00Z", "kind": "proc.sample", "plugin": "p", "dur_s": 1,
+					"data": map[string]any{"exes": []any{}},
+				},
+			},
+		}
+	}
+	postFactsMap := func(t *testing.T, body map[string]any) (int, []byte) {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return postFactsRaw(t, base, agent, raw)
+	}
+
+	t.Run("facts_seq_zero_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		body["seq"] = 0
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("facts_dur_s_301_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		facts := body["facts"].([]any)
+		facts[0].(map[string]any)["dur_s"] = 301
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("facts_unknown_kind_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		facts := body["facts"].([]any)
+		facts[0].(map[string]any)["kind"] = "nope.kind"
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("facts_title_257_runes_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		title := strings.Repeat("あ", 257)
+		if utf8.RuneCountInString(title) != 257 {
+			t.Fatal("title rune count")
+		}
+		body["facts"] = []any{
+			map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "fg.sample", "plugin": "p", "dur_s": 1,
+				"data": map[string]any{
+					"exe": "notepad.exe", "pid": 1, "title": title, "idle_s": 0,
+				},
+			},
+		}
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("facts_501_items_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		items := make([]any, store.FactBatchMaxCount+1)
+		for i := range items {
+			items[i] = map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "proc.sample", "plugin": "p", "dur_s": 0,
+				"data": map[string]any{"exes": []any{}},
+			}
+		}
+		body["facts"] = items
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("facts_exe_item_too_long_400", func(t *testing.T) {
+		t.Parallel()
+		body := baseFact()
+		long := strings.Repeat("e", 261)
+		body["facts"] = []any{
+			map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "proc.sample", "plugin": "p", "dur_s": 0,
+				"data": map[string]any{"exes": []any{long}},
+			},
+		}
+		code, raw := postFactsMap(t, body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("usage_empty_date_400", func(t *testing.T) {
+		t.Parallel()
+		code, _, raw := doJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=", pat, nil)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("usage_missing_date_400", func(t *testing.T) {
+		t.Parallel()
+		code, _, raw := doJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage", pat, nil)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
+
+	t.Run("usage_tz_ignored_still_501", func(t *testing.T) {
+		t.Parallel()
+		code, _, raw := doJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=2026-11-28&tz=UTC", pat, nil)
+		if code != http.StatusNotImplemented {
+			t.Fatalf("status=%d body=%s", code, raw)
+		}
+		assertErrorResponse(t, raw)
+	})
 }

@@ -387,6 +387,31 @@ func TestTC16_FullStackAccountTokenAgentMCPScript(t *testing.T) {
 		t.Fatalf("GET usage unauthenticated want 401, got %d %s", code, raw)
 	}
 
+	// Production-path contract validation (before 501 stub).
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/heartbeat", agentTok, map[string]any{
+		"machine_id": machineID, "agent_version": "0.0.1-e2e", "hostname": "e2e-linux",
+		"os_version": "linux", "applied_policy_version": 0,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("heartbeat missing time_zone want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	badFacts := map[string]any{
+		"machine_id": machineID, "stream_id": uuid.NewString(), "seq": 0,
+		"sent_at": time.Now().UTC().Format(time.RFC3339), "time_zone": "UTC",
+		"utc_offset_minutes": 0, "facts": []any{},
+	}
+	code, raw = postJSON(t, http.MethodPost, base+"/v1/facts", agentTok, badFacts)
+	if code != http.StatusBadRequest {
+		t.Fatalf("facts seq=0 want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+	code, raw = postJSON(t, http.MethodGet, base+"/v1/machines/"+machineID+"/usage?date=", patA, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("usage empty date want 400, got %d %s", code, raw)
+	}
+	assertErrorJSON(t, raw)
+
 	machinesObj := decodeToolJSON(t, callTool(t, mcpA, "list_machines", nil)).(map[string]any)
 	machines, _ := machinesObj["machines"].([]any)
 	if len(machines) != 1 {
