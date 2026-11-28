@@ -430,11 +430,22 @@ func TestFacts_TitleTruncate(t *testing.T) {
 	if st.FactCount() != 1 {
 		t.Fatal(st.FactCount())
 	}
-	// Peek stored title via memory map is private; verify via re-read isn't exposed —
-	// assert UTF-8 rune count of truncated value through a second post that would fail
-	// if we rejected >256. Truncation is covered by usage package unit tests; here we
-	// only assert accept of 300-rune title.
-	_ = utf8.RuneCountInString(title)
+	snap := st.FactsSnapshot()
+	if len(snap) != 1 {
+		t.Fatalf("snapshot=%d", len(snap))
+	}
+	var data struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(snap[0].Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(data.Title) {
+		t.Fatal("stored title invalid UTF-8")
+	}
+	if utf8.RuneCountInString(data.Title) != store.FactTitleMaxLen {
+		t.Fatalf("stored title runes=%d want %d", utf8.RuneCountInString(data.Title), store.FactTitleMaxLen)
+	}
 }
 
 func TestFacts_ValidationMatrix(t *testing.T) {
@@ -654,6 +665,146 @@ func TestFacts_AuthAndTenantIsolation(t *testing.T) {
 			t.Fatalf("%d %s", code, raw)
 		}
 	})
+}
+
+func TestFacts_OutOfOrderHTTP(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	st := memory.New()
+	_, pat := seedTenantPAT(t, st, "facts-ooo-"+uuid.NewString()[:8])
+	base := startTestServer(t, st, server.Config{Clock: fixedClock(now)})
+	agent := createAgentToken(t, base, pat)
+	machineID := uuid.NewString()
+	_ = enrollMachine(t, base, agent, machineID, "UTC", 0)
+	stream := uuid.NewString()
+
+	post := func(seq int64, dur int) (int, map[string]any, []byte) {
+		t.Helper()
+		return postFactsMap(t, base, agent, map[string]any{
+			"machine_id": machineID, "stream_id": stream, "seq": seq,
+			"sent_at": "2026-11-28T12:00:00Z", "time_zone": "UTC", "utc_offset_minutes": 0,
+			"facts": []any{map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "proc.sample", "plugin": "p", "dur_s": dur,
+				"data": map[string]any{"exes": []any{"a.exe"}},
+			}},
+		})
+	}
+	code, _, raw := post(5, 50)
+	if code != http.StatusOK {
+		t.Fatalf("seq5 %d %s", code, raw)
+	}
+	if st.FactCount() != 1 {
+		t.Fatal(st.FactCount())
+	}
+	code, u, _ := getUsageJSON(t, base, pat, machineID, "2026-11-28")
+	if code != http.StatusOK || int(u["apps"].([]any)[0].(map[string]any)["seconds"].(float64)) != 50 {
+		t.Fatalf("after seq5 usage=%v", u)
+	}
+
+	code, ack, raw := post(1, 10) // new (S,1) after (S,5)
+	if code != http.StatusOK || ack["duplicate"] != false {
+		t.Fatalf("ooo seq1 %d ack=%v %s", code, ack, raw)
+	}
+	if st.FactCount() != 2 {
+		t.Fatalf("facts must grow, got %d", st.FactCount())
+	}
+	code, u, _ = getUsageJSON(t, base, pat, machineID, "2026-11-28")
+	if code != http.StatusOK || int(u["apps"].([]any)[0].(map[string]any)["seconds"].(float64)) != 50 {
+		t.Fatalf("usage must stay 50 after ooo: %v", u)
+	}
+}
+
+func TestFacts_HTTPBoundaryCases(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	st := memory.New()
+	_, pat := seedTenantPAT(t, st, "facts-bound-"+uuid.NewString()[:8])
+	base := startTestServer(t, st, server.Config{Clock: fixedClock(now)})
+	agent := createAgentToken(t, base, pat)
+	machineID := uuid.NewString()
+	_ = enrollMachine(t, base, agent, machineID, "UTC", 0)
+
+	postProc := func(dur int) (int, []byte) {
+		t.Helper()
+		code, _, raw := postFactsMap(t, base, agent, map[string]any{
+			"machine_id": machineID, "stream_id": uuid.NewString(), "seq": 1,
+			"sent_at": "2026-11-28T12:00:00Z", "time_zone": "UTC", "utc_offset_minutes": 0,
+			"facts": []any{map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "proc.sample", "plugin": "p", "dur_s": dur,
+				"data": map[string]any{"exes": []any{"a.exe"}},
+			}},
+		})
+		return code, raw
+	}
+	if code, raw := postProc(300); code != http.StatusOK {
+		t.Fatalf("dur_s=300 want 200 got %d %s", code, raw)
+	}
+	if code, raw := postProc(301); code != http.StatusBadRequest {
+		t.Fatalf("dur_s=301 want 400 got %d %s", code, raw)
+	}
+
+	postTitle := func(n int) (int, string) {
+		t.Helper()
+		title := strings.Repeat("x", n)
+		streamID := uuid.NewString()
+		before := st.FactCount()
+		code, _, raw := postFactsMap(t, base, agent, map[string]any{
+			"machine_id": machineID, "stream_id": streamID, "seq": 1,
+			"sent_at": "2026-11-28T12:00:00Z", "time_zone": "UTC", "utc_offset_minutes": 0,
+			"facts": []any{map[string]any{
+				"ts": "2026-11-28T12:00:00Z", "kind": "fg.sample", "plugin": "p", "dur_s": 1,
+				"data": map[string]any{"exe": "n.exe", "pid": 1, "title": title, "idle_s": 0},
+			}},
+		})
+		if code != http.StatusOK {
+			return code, string(raw)
+		}
+		if st.FactCount() != before+1 {
+			t.Fatalf("expected one new fact, before=%d after=%d", before, st.FactCount())
+		}
+		var data struct {
+			Title string `json:"title"`
+		}
+		for _, ft := range st.FactsSnapshot() {
+			if ft.StreamID == streamID && ft.Seq == 1 {
+				if err := json.Unmarshal(ft.Data, &data); err != nil {
+					t.Fatal(err)
+				}
+				return code, data.Title
+			}
+		}
+		t.Fatal("inserted fact not found")
+		return code, ""
+	}
+	if code, title := postTitle(255); code != http.StatusOK || utf8.RuneCountInString(title) != 255 {
+		t.Fatalf("title 255: code=%d runes=%d", code, utf8.RuneCountInString(title))
+	}
+	if code, title := postTitle(256); code != http.StatusOK || utf8.RuneCountInString(title) != 256 {
+		t.Fatalf("title 256: code=%d runes=%d", code, utf8.RuneCountInString(title))
+	}
+	if code, title := postTitle(257); code != http.StatusOK || utf8.RuneCountInString(title) != 256 {
+		t.Fatalf("title 257 truncated: code=%d runes=%d", code, utf8.RuneCountInString(title))
+	}
+
+	// Revoked agent token → 401 on /v1/facts.
+	code, _, listRaw := doJSON(t, http.MethodGet, base+"/v1/agent-tokens", pat, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list tokens %d %s", code, listRaw)
+	}
+	var tokens []map[string]any
+	if err := json.Unmarshal(listRaw, &tokens); err != nil || len(tokens) == 0 {
+		t.Fatalf("tokens=%v err=%v", string(listRaw), err)
+	}
+	tokID, _ := tokens[0]["id"].(string)
+	delCode, _, delRaw := doJSON(t, http.MethodDelete, base+"/v1/agent-tokens/"+tokID, pat, nil)
+	if delCode != http.StatusNoContent {
+		t.Fatalf("revoke %d %s", delCode, delRaw)
+	}
+	code, raw := postProc(1)
+	// postProc still uses the revoked agent bearer
+	if code != http.StatusUnauthorized {
+		t.Fatalf("revoked agent facts want 401 got %d %s", code, raw)
+	}
 }
 
 func TestFacts_BodySizeExactOK(t *testing.T) {

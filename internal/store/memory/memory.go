@@ -807,6 +807,21 @@ func (s *Store) FactCount() int {
 	return len(s.facts)
 }
 
+// FactsSnapshot returns a copy of all stored facts (test helper).
+func (s *Store) FactsSnapshot() []store.Fact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]store.Fact, 0, len(s.facts))
+	for _, ft := range s.facts {
+		cp := ft
+		if ft.Data != nil {
+			cp.Data = append(json.RawMessage(nil), ft.Data...)
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
 type usageStore struct{ s *Store }
 
 func (u usageStore) Apply(_ context.Context, tenantID, machineID, streamID string, seq int64, deltas []store.UsageDelta) (int, error) {

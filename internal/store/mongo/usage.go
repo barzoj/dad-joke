@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/barzoj/dad-joke/internal/store"
 	"github.com/barzoj/dad-joke/internal/usage"
@@ -127,16 +128,7 @@ func (s *Store) ensureFactsTTL(ctx context.Context, expireSecs int32) error {
 			continue
 		}
 		found = true
-		switch v := idx["expireAfterSeconds"].(type) {
-		case int32:
-			currentExpire = v
-		case int64:
-			currentExpire = int32(v)
-		case float64:
-			currentExpire = int32(v)
-		case int:
-			currentExpire = int32(v)
-		}
+		currentExpire = expireAfterSecondsFromBSON(idx["expireAfterSeconds"])
 	}
 	if err := cur.Err(); err != nil {
 		return err
@@ -167,4 +159,35 @@ func (s *Store) ensureFactsTTL(ctx context.Context, expireSecs int32) error {
 		return fmt.Errorf("mongo: collMod facts TTL: %w", err)
 	}
 	return nil
+}
+
+// expireAfterSecondsFromBSON narrows BSON numeric TTL values to int32.
+// Values outside int32 are clamped (TTL seconds for our retention are ≤ 365*86400).
+func expireAfterSecondsFromBSON(v any) int32 {
+	var n int64
+	switch x := v.(type) {
+	case int32:
+		return x
+	case int64:
+		n = x
+	case float64:
+		if x > float64(math.MaxInt64) {
+			return math.MaxInt32
+		}
+		if x < float64(math.MinInt64) {
+			return 0
+		}
+		n = int64(x)
+	case int:
+		n = int64(x)
+	default:
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < 0 {
+		return 0
+	}
+	return int32(n) // #nosec G115 -- clamped to [0, MaxInt32] above
 }

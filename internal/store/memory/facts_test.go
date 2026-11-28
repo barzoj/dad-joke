@@ -115,6 +115,47 @@ func TestFactStore_FaultInjectionHook(t *testing.T) {
 	}
 }
 
+func TestFacts_OutOfOrderSeqPersistedNoUsageInc(t *testing.T) {
+	t.Parallel()
+	st := memory.New()
+	ctx := context.Background()
+	stream := uuid.NewString()
+	now := time.Now().UTC()
+	mk := func(seq int64) store.Fact {
+		return store.Fact{
+			TenantID: "t", MachineID: "m", StreamID: stream, Seq: seq, Idx: 0,
+			TS: now, TSServer: now, Kind: "proc.sample", DurS: int32(seq),
+		}
+	}
+	delta := func(sec int64) []store.UsageDelta {
+		return []store.UsageDelta{{Date: "2026-11-28", TimeZone: "UTC", Bucket: "app:a.exe", Seconds: sec}}
+	}
+
+	if n, err := st.Facts().InsertBatch(ctx, []store.Fact{mk(5)}); err != nil || n != 1 {
+		t.Fatalf("seq5 insert n=%d err=%v", n, err)
+	}
+	if n, err := st.Usage().Apply(ctx, "t", "m", stream, 5, delta(50)); err != nil || n != 1 {
+		t.Fatalf("seq5 apply n=%d err=%v", n, err)
+	}
+	if st.FactCount() != 1 {
+		t.Fatal(st.FactCount())
+	}
+
+	if n, err := st.Facts().InsertBatch(ctx, []store.Fact{mk(1)}); err != nil || n != 1 {
+		t.Fatalf("ooo seq1 insert n=%d err=%v", n, err)
+	}
+	if n, err := st.Usage().Apply(ctx, "t", "m", stream, 1, delta(10)); err != nil || n != 0 {
+		t.Fatalf("ooo seq1 apply n=%d err=%v", n, err)
+	}
+	if st.FactCount() != 2 {
+		t.Fatalf("facts must grow to 2, got %d", st.FactCount())
+	}
+	rows, err := st.Usage().ListByMachine(ctx, "t", "m", "2026-11-28")
+	if err != nil || len(rows) != 1 || rows[0].Seconds != 50 {
+		t.Fatalf("usage must stay 50: %v err=%v", rows, err)
+	}
+}
+
 func TestUsage_TenantIsolationAndEmpty(t *testing.T) {
 	t.Parallel()
 	st := memory.New()

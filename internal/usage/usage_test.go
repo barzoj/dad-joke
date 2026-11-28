@@ -80,6 +80,33 @@ func TestLocalDate_DSTSpringAndFall(t *testing.T) {
 	}
 }
 
+func TestBuildDeltas_DSTFallBackRepeatedHourNoDupOrLoss(t *testing.T) {
+	t.Parallel()
+	// Europe/Amsterdam 2026-10-25 fall-back: 02:00–03:00 occurs twice.
+	// Two distinct UTC instants that both map to local 02:30 on that date.
+	first := time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC) // 02:30 CEST (UTC+2)
+	second := time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC) // 02:30 CET (UTC+1)
+	for _, instant := range []time.Time{first, second} {
+		date, err := usage.LocalDate(instant, "Europe/Amsterdam")
+		if err != nil || date != "2026-10-25" {
+			t.Fatalf("%s → %s (%v)", instant, date, err)
+		}
+	}
+	deltas, err := usage.BuildDeltas([]usage.SampleInput{
+		{Kind: "proc.sample", DurS: 30, TSServer: first, TimeZone: "Europe/Amsterdam", Exes: []string{"a.exe"}},
+		{Kind: "proc.sample", DurS: 30, TSServer: second, TimeZone: "Europe/Amsterdam", Exes: []string{"a.exe"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deltas) != 1 {
+		t.Fatalf("want one summed delta, got %#v", deltas)
+	}
+	if deltas[0].Date != "2026-10-25" || deltas[0].Seconds != 60 {
+		t.Fatalf("fall-back must sum without loss/dup: %#v", deltas[0])
+	}
+}
+
 func TestLocalDate_LeapDayAndYearBoundary(t *testing.T) {
 	t.Parallel()
 	leap := time.Date(2028, 2, 29, 12, 0, 0, 0, time.UTC)

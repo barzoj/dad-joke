@@ -123,8 +123,16 @@ const (
 )
 
 // FactTTLSecondsFor returns expireAfterSeconds for the given retention days.
+// days is clamped to FactRetentionDaysMin..FactRetentionDaysMax so the product
+// always fits in int32 (max 365*86400 = 31_536_000).
 func FactTTLSecondsFor(days int) int32 {
-	return int32(days * 24 * 60 * 60)
+	if days < FactRetentionDaysMin {
+		days = FactRetentionDaysMin
+	}
+	if days > FactRetentionDaysMax {
+		days = FactRetentionDaysMax
+	}
+	return int32(days * 24 * 60 * 60) // #nosec G115 -- days clamped to 1..365 above
 }
 
 // EventQuery filters control-plane event reads.

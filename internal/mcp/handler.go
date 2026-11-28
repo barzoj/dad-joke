@@ -30,7 +30,7 @@ type Server struct {
 }
 
 // New builds a Streamable HTTP MCP handler that authorizes every request and
-// exposes exactly seven ControlAPI-backed tools.
+// exposes exactly eight ControlAPI-backed tools.
 func New(cfg Config) (*Server, error) {
 	if cfg.Client == nil {
 		return nil, fmt.Errorf("mcp: Client is required")

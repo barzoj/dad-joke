@@ -16,7 +16,7 @@ import (
 )
 
 // TestMCP_StructuredContentWireObject asserts the MCP CallToolResult contract on
-// the raw JSON-RPC wire for all seven tools: every successful call MUST include
+// the raw JSON-RPC wire for all eight tools: every successful call MUST include
 // a JSON-object structuredContent; content[0].text matches; empty lists are [].
 func TestMCP_StructuredContentWireObject(t *testing.T) {
 	t.Parallel()

@@ -113,19 +113,64 @@ func readFactsTTL(t *testing.T, st *Store) int32 {
 		if idx["name"] != "ttl_facts_ts_server" {
 			continue
 		}
-		switch v := idx["expireAfterSeconds"].(type) {
-		case int32:
-			return v
-		case int64:
-			return int32(v)
-		case float64:
-			return int32(v)
-		case int:
-			return int32(v)
-		}
+		return expireAfterSecondsFromBSON(idx["expireAfterSeconds"])
 	}
 	t.Fatal("ttl index missing")
 	return 0
+}
+
+func countFacts(t *testing.T, st *Store, tenantID, machineID, streamID string) int64 {
+	t.Helper()
+	n, err := st.coll(collFacts).CountDocuments(context.Background(), bson.D{
+		{Key: "tenant_id", Value: tenantID},
+		{Key: "machine_id", Value: machineID},
+		{Key: "stream_id", Value: streamID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestFacts_OutOfOrderSeqPersistedNoUsageInc(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	stream := uuid.NewString()
+	now := time.Now().UTC()
+	mk := func(seq int64) store.Fact {
+		return store.Fact{
+			TenantID: "t", MachineID: "m", StreamID: stream, Seq: seq, Idx: 0,
+			TS: now, TSServer: now, Kind: "proc.sample", Plugin: "p", DurS: int32(seq),
+		}
+	}
+	delta := func(sec int64) []store.UsageDelta {
+		return []store.UsageDelta{{Date: "2026-11-28", TimeZone: "UTC", Bucket: "app:a.exe", Seconds: sec}}
+	}
+
+	if n, err := st.Facts().InsertBatch(ctx, []store.Fact{mk(5)}); err != nil || n != 1 {
+		t.Fatalf("insert seq5 n=%d err=%v", n, err)
+	}
+	if n, err := st.Usage().Apply(ctx, "t", "m", stream, 5, delta(50)); err != nil || n != 1 {
+		t.Fatalf("apply seq5 n=%d err=%v", n, err)
+	}
+	if countFacts(t, st, "t", "m", stream) != 1 {
+		t.Fatal("want 1 fact after seq5")
+	}
+
+	// NEW (S,1) after (S,5): facts grow; usage seconds unchanged.
+	if n, err := st.Facts().InsertBatch(ctx, []store.Fact{mk(1)}); err != nil || n != 1 {
+		t.Fatalf("insert seq1 n=%d err=%v", n, err)
+	}
+	if n, err := st.Usage().Apply(ctx, "t", "m", stream, 1, delta(10)); err != nil || n != 0 {
+		t.Fatalf("apply seq1 ooo n=%d err=%v", n, err)
+	}
+	if countFacts(t, st, "t", "m", stream) != 2 {
+		t.Fatalf("want 2 facts after ooo seq1, got %d", countFacts(t, st, "t", "m", stream))
+	}
+	rows, err := st.Usage().ListByMachine(ctx, "t", "m", "2026-11-28")
+	if err != nil || len(rows) != 1 || rows[0].Seconds != 50 {
+		t.Fatalf("usage must stay 50: %v err=%v", rows, err)
+	}
 }
 
 func TestFacts_TenantIsolationDAL(t *testing.T) {

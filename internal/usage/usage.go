@@ -4,6 +4,7 @@ package usage
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -33,7 +34,14 @@ func OffsetMinutesAt(instant time.Time, timeZone string) (int32, error) {
 		return 0, fmt.Errorf("invalid time_zone %q: %w", timeZone, err)
 	}
 	_, offset := instant.In(loc).Zone()
-	return int32(offset / 60), nil
+	mins := offset / 60
+	if mins > math.MaxInt32 {
+		mins = math.MaxInt32
+	}
+	if mins < math.MinInt32 {
+		mins = math.MinInt32
+	}
+	return int32(mins), nil // #nosec G115 -- clamped to int32 range above
 }
 
 // CheckZoneOffset loads timeZone and verifies utcOffsetMinutes matches the

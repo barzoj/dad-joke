@@ -17,7 +17,9 @@ using TypeSpec.Http;
  *   **day** of a fact is its server-corrected timestamp in the batch's zone.
  *   The offset is a cross-check for a wrong Windows→IANA mapping.
  * - `title` is bounded by **characters/runes** (256); the server counts
- *   runes at apply time (not UTF-8 bytes).
+ *   runes at apply time (not UTF-8 bytes). Titles longer than 256 runes are
+ *   truncated to 256 runes without splitting a code point (stored value is
+ *   the truncated one); invalid UTF-8 is rejected with 400.
  * - Default retention for stored facts is 30 days.
  *
  * Per-kind required members of `FactData` (enforced server-side; documented
@@ -107,7 +109,8 @@ model FactData {
 
   /**
    * Foreground window title (required for `fg.sample`).
-   * Bound is characters/runes (256), not UTF-8 bytes.
+   * Bound is characters/runes (256), not UTF-8 bytes. Longer values are
+   * truncated to FactTitleMaxLen runes at ingest (never mid-code-point).
    */
   @maxLength(FactTitleMaxLen)
   title?: string;
