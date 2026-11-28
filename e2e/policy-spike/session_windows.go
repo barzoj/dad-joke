@@ -11,50 +11,29 @@ import (
 )
 
 var (
-	modWtsapi32             = windows.NewLazySystemDLL("wtsapi32.dll")
-	procWTSEnumerateSessionsW = modWtsapi32.NewProc("WTSEnumerateSessionsW")
-	procWTSFreeMemory         = modWtsapi32.NewProc("WTSFreeMemory")
+	modWtsapi32                     = windows.NewLazySystemDLL("wtsapi32.dll")
 	procWTSQuerySessionInformationW = modWtsapi32.NewProc("WTSQuerySessionInformationW")
-	procWTSLogoffSession      = modWtsapi32.NewProc("WTSLogoffSession")
-	procWTSDisconnectSession  = modWtsapi32.NewProc("WTSDisconnectSession")
+	procWTSFreeMemory               = modWtsapi32.NewProc("WTSFreeMemory")
+	procWTSLogoffSession            = modWtsapi32.NewProc("WTSLogoffSession")
+	procWTSDisconnectSession        = modWtsapi32.NewProc("WTSDisconnectSession")
 )
 
 const (
 	wtsUserName = 5
-	wtsActive   = 0
-	wtsConnected = 1
-	wtsDisconnected = 4
 )
 
-type wtsSessionEntry struct {
-	SessionID      uint32
-	WinStationName *uint16
-	State          uint32
-}
-
-func enumerateSessions(t testing.TB) []wtsSessionEntry {
+func enumerateSessions(t testing.TB) []windows.WTS_SESSION_INFO {
 	t.Helper()
-	var info *wtsSessionEntry
+	var info *windows.WTS_SESSION_INFO
 	var count uint32
-	r1, _, e1 := procWTSEnumerateSessionsW.Call(
-		0, // WTS_CURRENT_SERVER_HANDLE
-		0,
-		1,
-		uintptr(unsafe.Pointer(&info)),
-		uintptr(unsafe.Pointer(&count)),
-	)
-	if r1 == 0 {
-		t.Fatalf("WTSEnumerateSessionsW: %v", e1)
+	if err := windows.WTSEnumerateSessions(0, 0, 1, &info, &count); err != nil {
+		t.Fatalf("WTSEnumerateSessions: %v", err)
 	}
-	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(info)))
-
-	out := make([]wtsSessionEntry, 0, count)
-	stride := unsafe.Sizeof(wtsSessionEntry{})
-	for i := uint32(0); i < count; i++ {
-		p := (*wtsSessionEntry)(unsafe.Pointer(uintptr(unsafe.Pointer(info)) + uintptr(i)*stride))
-		out = append(out, *p)
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
+	if count == 0 || info == nil {
+		return nil
 	}
-	return out
+	return append([]windows.WTS_SESSION_INFO(nil), unsafe.Slice(info, count)...)
 }
 
 func sessionUserName(sessionID uint32) (string, error) {

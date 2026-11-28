@@ -23,7 +23,7 @@ func TestEdges_MalformedPolAndDelOps(t *testing.T) {
 	if err := os.WriteFile(machinePol, malformed, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	start := time.Now()
 	_, _, refreshErr := refreshPolicy(t)
 	malLat := time.Since(start)
@@ -59,7 +59,7 @@ if ($events) { ($events | Select-Object -First 3 | ForEach-Object { $_.Id.ToStri
 	if err := writePolFile(machinePol, delEntries); err != nil {
 		t.Fatal(err)
 	}
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	_, _, _ = refreshPolicy(t)
 	setRegDWORD(t, `HKLM:\Software\Policies\DadJokeSpike`, "Extra", 9)
 
@@ -72,7 +72,7 @@ if ($events) { ($events | Select-Object -First 3 | ForEach-Object { $_.Id.ToStri
 	if err := writePolFile(machinePol, append(delEntries, delOps...)); err != nil {
 		t.Fatal(err)
 	}
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	d0 := time.Now()
 	_, _, _ = refreshPolicy(t)
 	delLat := time.Since(d0)
@@ -98,7 +98,7 @@ if ($events) { ($events | Select-Object -First 3 | ForEach-Object { $_.Id.ToStri
 	if err := writePolFile(machinePol, dup); err != nil {
 		t.Fatal(err)
 	}
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	_, _, _ = refreshPolicy(t)
 	_, dupVal, _ := regDWORDExists(t, `HKLM:\Software\Policies\DadJokeSpike`, "Dup")
 	recordFinding(Finding{
@@ -134,7 +134,7 @@ func TestEdges_RefreshWhileUserLoggedOn(t *testing.T) {
 	appendUserPol(t, []PolEntry{
 		{Key: `Software\Microsoft\Windows\CurrentVersion\Policies\System`, Value: "DisableTaskMgr", Type: regDWORD, Data: dwordData(1)},
 	})
-	bumpGPT(t, false, true, "", "")
+	bumpGPT(t, false, true, nil, nil)
 	start := time.Now()
 	lat, _, err := refreshPolicy(t)
 	if err != nil {

@@ -194,13 +194,3 @@ func mergePol(existing, add []PolEntry) []PolEntry {
 	out = append(out, add...)
 	return out
 }
-
-func filterPol(entries []PolEntry, keep func(PolEntry) bool) []PolEntry {
-	var out []PolEntry
-	for _, e := range entries {
-		if keep(e) {
-			out = append(out, e)
-		}
-	}
-	return out
-}

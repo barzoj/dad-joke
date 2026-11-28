@@ -1,3 +1,5 @@
+//go:build spike
+
 // Package policyspike holds the T-24 native Windows policy application spike.
 //
 // Enable with: go test -tags=spike ./e2e/policy-spike/...

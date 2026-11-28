@@ -31,7 +31,7 @@ func TestRollback_PreservesForeignPolEntries(t *testing.T) {
 	if err := writePolFile(machinePol, []PolEntry{foreign, ours}); err != nil {
 		t.Fatalf("seed pol: %v", err)
 	}
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	start := time.Now()
 	_, _, err := refreshPolicy(t)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRollback_PreservesForeignPolEntries(t *testing.T) {
 	}
 	// Also delete our registry residue that GP may leave until next apply cleans — explicit delete.
 	deleteRegKey(t, `HKLM:\Software\Policies\DadJokeSpike`)
-	bumpGPT(t, true, false, "", "")
+	bumpGPT(t, true, false, nil, nil)
 	rbStart := time.Now()
 	_, _, err = refreshPolicy(t)
 	rbLat := time.Since(rbStart)

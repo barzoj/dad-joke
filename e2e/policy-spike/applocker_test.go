@@ -16,16 +16,20 @@ func TestAppLocker_Variants(t *testing.T) {
 	requireAdmin(t)
 	u := createStandardUser(t)
 
-	// Probe target: a copy of notepad under Program Files (not user-writable).
+	// Probe target: ping.exe copy under Program Files (not user-writable; can stay running).
 	probeDir := `C:\Program Files\DadJokeSpike`
 	probeExe := filepath.Join(probeDir, "spike_probe.exe")
 	mustPS(t, fmt.Sprintf(`
 $ErrorActionPreference='Stop'
 New-Item -ItemType Directory -Force -Path %s | Out-Null
-Copy-Item -Force -Path $env:WINDIR\System32\notepad.exe -Destination %s
+Copy-Item -Force -Path $env:WINDIR\System32\ping.exe -Destination %s
 `, quotePS(probeDir), quotePS(probeExe)))
 	t.Cleanup(func() {
-		_, _ = powershell(t, fmt.Sprintf(`Remove-Item -LiteralPath %s -Recurse -Force -ErrorAction SilentlyContinue`, quotePS(probeDir)))
+		_, _ = powershell(t, fmt.Sprintf(`
+$ErrorActionPreference='SilentlyContinue'
+Get-Process | Where-Object { $_.Path -eq %s } | Stop-Process -Force
+Remove-Item -LiteralPath %s -Recurse -Force
+`, quotePS(probeExe), quotePS(probeDir)))
 		clearAppLockerSpike(t)
 	})
 
@@ -34,6 +38,33 @@ Copy-Item -Force -Path $env:WINDIR\System32\notepad.exe -Destination %s
 	mustPS(t, `Set-Service -Name AppIDSvc -StartupType Automatic; Start-Service AppIDSvc -ErrorAction SilentlyContinue`)
 	appidStartLat := time.Since(startAppID)
 	appidAfter := serviceState(t, "AppIDSvc")
+
+	// Already-running process: start BEFORE deny, then apply, then assert still alive.
+	alreadyRunningNote := "not measured"
+	prePID := ""
+	{
+		out, err := powershell(t, fmt.Sprintf(`
+$ErrorActionPreference='Stop'
+$u = %s; $p = %s; $exe = %s
+$task = 'djspike_al_pre_' + [guid]::NewGuid().ToString('N').Substring(0,8)
+Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute $exe -Argument '-n 90 127.0.0.1'
+$principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Password -RunLevel Limited
+Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
+Set-ScheduledTask -TaskName $task -User $u -Password $p | Out-Null
+Start-ScheduledTask -TaskName $task
+Start-Sleep -Seconds 2
+$proc = Get-Process | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
+if (-not $proc) { throw 'pre-policy probe process did not start' }
+Write-Output $proc.Id
+`, quotePS(u.Name), quotePS(u.Password), quotePS(probeExe)))
+		if err != nil {
+			alreadyRunningNote = "not measured (pre-start failed: " + truncate(strings.TrimSpace(out)+" "+err.Error(), 120) + ")"
+			t.Logf("already-running pre-start: %v\n%s", err, out)
+		} else {
+			prePID = strings.TrimSpace(out)
+		}
+	}
 
 	// --- Variant A: Set-AppLockerPolicy (XML) ---
 	xml := fmt.Sprintf(`
@@ -68,33 +99,36 @@ Set-AppLockerPolicy -XmlPolicy %s -Merge
 		t.Logf("Set-AppLockerPolicy: %v\n%s", err, out)
 	}
 
+	if prePID != "" && setPolicyOK {
+		alive := mustPS(t, fmt.Sprintf(`
+$ErrorActionPreference='SilentlyContinue'
+$p = Get-Process -Id %s -ErrorAction SilentlyContinue
+if ($p) { 'alive' } else { 'gone' }
+`, prePID))
+		if alive == "alive" {
+			alreadyRunningNote = "measured: pre-existing pid=" + prePID + " still running after deny (create-time enforcement)"
+		} else {
+			alreadyRunningNote = "measured: pre-existing pid=" + prePID + " gone after deny"
+		}
+	} else if prePID != "" && !setPolicyOK {
+		alreadyRunningNote = "not measured (policy set failed after pre-start)"
+	}
+
 	denyLatency := time.Duration(0)
 	blocked := false
 	var blockDetail string
 	if setPolicyOK {
 		d0 := time.Now()
-		code, o, e := runAsUser(t, u, probeExe, nil, 10*time.Second)
+		code, o, e := runAsUser(t, u, probeExe, []string{"-n", "1", "127.0.0.1"}, 10*time.Second)
 		denyLatency = time.Since(d0)
 		blockDetail = fmt.Sprintf("exit=%d err=%v out=%q", code, e, truncate(o, 120))
-		// AppLocker typically returns ACCESS_DENIED / exit may be non-zero or CreateProcess fails.
-		if e != nil && (strings.Contains(strings.ToLower(e.Error()), "denied") ||
-			strings.Contains(strings.ToLower(e.Error()), "755") ||
-			strings.Contains(strings.ToLower(e.Error()), "privilege")) {
-			blocked = true
-		}
-		if code != 0 && e == nil {
-			// process started then exited — may not be AppLocker
-			blockDetail += " (process ran)"
-		}
+		// AppLocker typically returns ACCESS_DENIED / CreateProcess fails.
 		if e != nil {
 			blocked = true
 		}
-	}
-
-	// Already-running process: start before policy, then apply — skip if set failed.
-	alreadyRunningNote := "n/a"
-	if setPolicyOK {
-		alreadyRunningNote = "hosted runner: pre-existing process not terminated by AppLocker deny (enforcement is create-time)"
+		if code != 0 && e == nil {
+			blockDetail += " (process ran)"
+		}
 	}
 
 	// Audit channel
@@ -135,7 +169,7 @@ New-ItemProperty -Path %s -Name 'SpikeProbe' -PropertyType String -Value %s -For
 		{Key: `Software\Policies\Microsoft\Windows\SrpV2\Exe`, Value: "EnforcementMode", Type: regDWORD, Data: dwordData(1)},
 	}
 	appendMachinePol(t, polEntries)
-	bumpGPT(t, true, false, cseAppLocker, "")
+	bumpGPT(t, true, false, []csePair{{cseAppLocker, toolAppLocker}}, nil)
 	polStart := time.Now()
 	_, _, polErr := refreshPolicy(t)
 	polLat := time.Since(polStart)
@@ -212,6 +246,7 @@ $path = Join-Path $env:TEMP 'djspike_al_clear.xml'
 Set-Content -Path $path -Value $xml -Encoding UTF8
 try { Set-AppLockerPolicy -XmlPolicy $path } catch {}
 Remove-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2' -Recurse -Force
+Get-ScheduledTask | Where-Object { $_.TaskName -like 'djspike_al_pre_*' } | Unregister-ScheduledTask -Confirm:$false
 `)
 }
 

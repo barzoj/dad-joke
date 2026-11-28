@@ -23,12 +23,19 @@ const (
 	cseRegistry = `{35378EAC-683F-11D2-A89A-00C04FBBCFA2}`
 	toolMachine = `{D02B1F72-3407-48AE-BA88-E94639B752F0}`
 	toolUser    = `{D02B1F73-3407-48AE-BA88-E94639B752F0}`
-	// Firewall CSE (MS-GPFAS).
+	// Firewall CSE (MS-GPFAS); tool GUID matches CSE in common LGPO dumps.
 	cseFirewall = `{0E28E233-B7C3-45e5-A7AB-5F34E1028E7C}`
-	toolFW      = `{0E28E233-B7C3-45e5-A7AB-5F34E1028E7C}` // paired same in many LGPO dumps
-	// AppLocker / SRP CSE.
-	cseAppLocker = `{3AAE67FC-DAA8-4EE3-B85F-8161A808D5C3}`
+	toolFW      = `{0E28E233-B7C3-45e5-A7AB-5F34E1028E7C}`
+	// AppLocker / SRP CSE + AppLocker MMC administrative tool extension.
+	cseAppLocker  = `{3AAE67FC-DAA8-4EE3-B85F-8161A808D5C3}`
+	toolAppLocker = `{B1BE8D78-6D31-4968-90A1-6C8B6D1C2F9D}`
 )
+
+// csePair is one [{CSE}{Tool}] registration for GPT.INI extension lists.
+type csePair struct {
+	cse  string
+	tool string
+}
 
 type gptState struct {
 	Raw             string
@@ -86,7 +93,7 @@ func ensureExtPair(list, cse, tool string) string {
 	return list + pair
 }
 
-func bumpGPT(t testing.TB, bumpMachine, bumpUser bool, extraMachineCSE, extraUserCSE string) {
+func bumpGPT(t testing.TB, bumpMachine, bumpUser bool, machineExtras, userExtras []csePair) {
 	t.Helper()
 	st := readGPT(t)
 	mv, uv := st.MachineVersion, st.UserVersion
@@ -106,11 +113,11 @@ func bumpGPT(t testing.TB, bumpMachine, bumpUser bool, extraMachineCSE, extraUse
 	uExt := st.UserExtNames
 	mExt = ensureExtPair(mExt, cseRegistry, toolMachine)
 	uExt = ensureExtPair(uExt, cseRegistry, toolUser)
-	if extraMachineCSE != "" {
-		mExt = ensureExtPair(mExt, extraMachineCSE, toolFW)
+	for _, p := range machineExtras {
+		mExt = ensureExtPair(mExt, p.cse, p.tool)
 	}
-	if extraUserCSE != "" {
-		uExt = ensureExtPair(uExt, extraUserCSE, toolUser)
+	for _, p := range userExtras {
+		uExt = ensureExtPair(uExt, p.cse, p.tool)
 	}
 	writeGPT(t, mv, uv, mExt, uExt)
 }

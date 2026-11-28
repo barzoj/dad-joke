@@ -25,12 +25,6 @@ func mustPS(t testing.TB, script string) string {
 	return out
 }
 
-func psOK(t testing.TB, script string) bool {
-	t.Helper()
-	_, err := powershell(t, script)
-	return err == nil
-}
-
 func quotePS(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

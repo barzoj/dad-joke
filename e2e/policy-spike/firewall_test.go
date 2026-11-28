@@ -18,10 +18,14 @@ func TestFirewall_GPORegistryRule(t *testing.T) {
 	ruleVal := fmt.Sprintf("v2.31|Action=Block|Active=TRUE|Dir=Out|App=C:\\Windows\\System32\\curl.exe|Name=DadJokeSpikeBlockCurl|")
 	key := `Software\Policies\Microsoft\WindowsFirewall\FirewallRules`
 
+	// Baseline: curl should reach example.com before the policy rule is applied.
+	beforeOut, beforeErr := curlHTTPCode(t)
+	beforeOK := beforeErr == nil && beforeOut != "" && beforeOut != "000"
+
 	appendMachinePol(t, []PolEntry{
 		{Key: key, Value: ruleID, Type: regSZ, Data: szData(ruleVal)},
 	})
-	bumpGPT(t, true, false, cseFirewall, "")
+	bumpGPT(t, true, false, []csePair{{cseFirewall, toolFW}}, nil)
 
 	start := time.Now()
 	lat, _, err := refreshPolicy(t)
@@ -60,16 +64,11 @@ if (-not $r2) {
 		visibleStore += " err=" + storeErr.Error()
 	}
 
-	// Enforcement probe: outbound curl to a public echo may still succeed if rule not active.
-	enforceOut, _ := powershell(t, `
-$ErrorActionPreference='SilentlyContinue'
-try {
-  $r = & curl.exe -s -o NUL -w '%%{http_code}' --connect-timeout 5 https://example.com/
-  Write-Output ('curl_http=' + $r)
-} catch {
-  Write-Output ('curl_err=' + $_.Exception.Message)
-}
-`)
+	afterOut, afterErr := curlHTTPCode(t)
+	// Enforcement: baseline succeeded and post-rule curl failed / returned 000.
+	enforced := beforeOK && (afterErr != nil || afterOut == "000" || afterOut == "")
+	enforceProbe := fmt.Sprintf("before_http=%s before_err=%v after_http=%s after_err=%v enforced=%v",
+		beforeOut, beforeErr, afterOut, afterErr, enforced)
 
 	t.Cleanup(func() {
 		deleteRegValue(t, regPath, ruleID)
@@ -80,7 +79,7 @@ try {
 	if present == "present" {
 		works = "partial"
 	}
-	if strings.Contains(visibleStore, "found:") {
+	if enforced {
 		works = "yes"
 	}
 
@@ -92,11 +91,32 @@ try {
 		NeedsRelogon:    "no",
 		NeedsReboot:     "no",
 		VisibleGpresult: boolYN(gpresultHas(t, "", "Firewall") || gpresultHas(t, "", "Windows Firewall")),
-		Gotchas:         fmt.Sprintf("registry=%s Get-NetFirewallRule=%q enforce_probe=%q; Firewall CSE GUID %s listed in GPT", present, visibleStore, strings.TrimSpace(enforceOut), cseFirewall),
+		Gotchas:         fmt.Sprintf("registry=%s Get-NetFirewallRule=%q %s; Firewall CSE GUID %s listed in GPT", present, visibleStore, enforceProbe, cseFirewall),
 		ClientSKUNote:   "Policy-store visibility differs; Home still honors HKLM firewall policy keys when the firewall service reads them",
 	})
 
 	if present != "present" {
 		t.Fatalf("firewall rule registry value missing after refresh")
 	}
+	if !beforeOK {
+		t.Logf("baseline curl did not succeed (%s / %v); cannot claim outbound block enforcement", beforeOut, beforeErr)
+	}
+	if beforeOK && !enforced {
+		t.Logf("registry present but outbound curl still succeeded after rule (http=%s); Works=partial", afterOut)
+	}
+}
+
+// curlHTTPCode runs curl.exe and returns the %{http_code} write-out (or "" on hard failure).
+func curlHTTPCode(t testing.TB) (code string, err error) {
+	t.Helper()
+	// PowerShell single-quoted -w argument must be %{http_code} (not batch-style %%).
+	out, err := powershell(t, `
+$ErrorActionPreference='Continue'
+$code = & curl.exe -s -o NUL -w '%{http_code}' --connect-timeout 5 --max-time 15 https://example.com/ 2>$null
+if ($LASTEXITCODE -ne 0 -and [string]::IsNullOrWhiteSpace($code)) {
+  throw ("curl exit=" + $LASTEXITCODE)
+}
+Write-Output $code
+`)
+	return strings.TrimSpace(out), err
 }

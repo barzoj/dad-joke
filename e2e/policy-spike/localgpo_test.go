@@ -22,7 +22,7 @@ func TestLocalGPO_RegistryPol_UserPolicies(t *testing.T) {
 		{Key: `Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun`, Value: "1", Type: regSZ, Data: szData("notepad.exe")},
 	}
 	appendUserPol(t, entries)
-	bumpGPT(t, false, true, "", "")
+	bumpGPT(t, false, true, nil, nil)
 
 	// Confirm User\Registry.pol is well-formed before relying on gpsvc.
 	parsed, err := readPolFile(userPol)
