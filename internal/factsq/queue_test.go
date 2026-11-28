@@ -534,8 +534,10 @@ func TestEnqueueENOSPCPreservesExisting(t *testing.T) {
 
 func TestEnqueueReadOnlyDirectory(t *testing.T) {
 	t.Parallel()
+	// Inject EACCES via FS — POSIX chmod 0555 does not deny writes on Windows.
 	dir := t.TempDir()
-	q := &Queue{Dir: dir, Cap: 1 << 20, ApplyACL: nopACL}
+	failFS := &failCreateTempFS{}
+	q := &Queue{Dir: dir, Cap: 1 << 20, ApplyACL: nopACL, FS: failFS}
 	if err := q.Open(); err != nil {
 		t.Fatal(err)
 	}
@@ -543,16 +545,17 @@ func TestEnqueueReadOnlyDirectory(t *testing.T) {
 	if _, _, err := q.Enqueue(batchJSON(stream, 1, "before-ro")); err != nil {
 		t.Fatal(err)
 	}
-	// Make the queue dir non-writable (temp create fails).
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	failFS.armed = true
+	failFS.err = os.ErrPermission
 
 	_, _, err := q.Enqueue(batchJSON(stream, 2, "after-ro"))
 	if err == nil {
 		t.Fatal("expected enqueue error on read-only directory")
 	}
+	if !errors.Is(err, os.ErrPermission) && !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("err = %v, want permission error", err)
+	}
+	failFS.armed = false
 	pending, err := q.PendingSeqs()
 	if err != nil {
 		t.Fatal(err)

@@ -206,8 +206,10 @@ func TestSampleContinuesOnENOSPC(t *testing.T) {
 
 func TestSampleContinuesOnReadOnlyQueue(t *testing.T) {
 	t.Parallel()
+	// Inject EACCES via FS — POSIX chmod 0555 does not deny writes on Windows.
 	dir := t.TempDir()
-	q := &factsq.Queue{Dir: dir, Cap: 1 << 20, ApplyACL: func(string) error { return nil }}
+	failFS := &failCreateTempFS{}
+	q := &factsq.Queue{Dir: dir, Cap: 1 << 20, ApplyACL: func(string) error { return nil }, FS: failFS}
 	if err := q.Open(); err != nil {
 		t.Fatal(err)
 	}
@@ -223,10 +225,8 @@ func TestSampleContinuesOnReadOnlyQueue(t *testing.T) {
 	if err := loop.sampleOnce(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	failFS.armed = true
+	failFS.err = os.ErrPermission
 
 	logs := &logCapture{}
 	loop.Log = logs
@@ -234,6 +234,7 @@ func TestSampleContinuesOnReadOnlyQueue(t *testing.T) {
 	if !strings.Contains(logs.joined(), "sample failed (continuing)") {
 		t.Fatalf("expected continuing log, got %q", logs.joined())
 	}
+	failFS.armed = false
 	pending, err := q.PendingSeqs()
 	if err != nil {
 		t.Fatal(err)
