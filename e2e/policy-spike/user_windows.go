@@ -28,14 +28,17 @@ func createStandardUser(t *testing.T) *testUser {
 		pass = pass[:14]
 	}
 	out, err := powershell(t, fmt.Sprintf(`
-$ErrorActionPreference = 'Stop'
 $name = %s
 $plain = %s
-net user $name /delete 2>$null | Out-Null
+# PS7 treats native-command stderr as errors under Stop; delete is best-effort.
+$ErrorActionPreference = 'Continue'
+cmd.exe /c ('net user ' + $name + ' /delete >nul 2>nul') | Out-Null
+$ErrorActionPreference = 'Stop'
 # net user accepts a plaintext password without the Security module.
-$net = net user $name $plain /add 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) { throw "net user /add failed: $net" }
-net localgroup Administrators $name /delete 2>&1 | Out-Null
+$add = 'net user ' + $name + ' ' + $plain + ' /add'
+$net = cmd.exe /c $add 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw ("net user /add failed: " + $net) }
+cmd.exe /c ('net localgroup Administrators ' + $name + ' /delete') 2>&1 | Out-Null
 $admins = net localgroup Administrators | Out-String
 if ($admins -match ('(?im)^\s*' + [regex]::Escape($name) + '\s*$')) {
   throw 'user unexpectedly in Administrators'

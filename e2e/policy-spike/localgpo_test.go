@@ -170,26 +170,35 @@ func TestLocalGPO_NoVersionBump_NoApply(t *testing.T) {
 	})
 	writeGPT(t, mv, uv, mExt, uExt)
 
+	// Important: gpupdate /force reapplies CSEs and bypasses the version skip.
+	// Probe the version check with a non-force refresh.
+	outNF, errNF := runCmd("gpupdate.exe", "/Target:Computer")
+	_ = outNF
+	presentNF, valNF, _ := regDWORDExists(t, `HKLM:\Software\Policies\DadJokeSpike`, "NoBump")
+	appliedNoForce := presentNF && valNF == marker
+
+	// Contrast: /force does re-apply even without a version bump.
 	_, _, _ = refreshPolicyOpts(t, false)
-	present, val, _ := regDWORDExists(t, `HKLM:\Software\Policies\DadJokeSpike`, "NoBump")
-	applied := present && val == marker
+	presentF, valF, _ := regDWORDExists(t, `HKLM:\Software\Policies\DadJokeSpike`, "NoBump")
+	appliedForce := presentF && valF == marker
 
 	recordFinding(Finding{
 		Mechanism:       "Local GPO Registry.pol",
 		Variant:         "GPT.INI version NOT bumped",
-		Works:           boolIf(!applied, "yes (correctly skipped)", "no (unexpected apply)"),
+		Works:           boolIf(!appliedNoForce, "yes (non-force refresh skipped)", "no (applied without bump)"),
 		Latency:         "n/a",
 		NeedsRelogon:    "n/a",
 		NeedsReboot:     "n/a",
 		VisibleGpresult: "n/a",
-		Gotchas:         fmt.Sprintf("without version bump, apply observed=%v present=%v val=%d (gpsvc skips when Version unchanged even if Registry.pol bytes changed)", applied, present, val),
-		ClientSKUNote:   "gpsvc version check is core GP behavior on all SKUs",
+		Gotchas: fmt.Sprintf("non-force apply=%v (val=%d, gpupdateErr=%v); gpupdate /force apply=%v (val=%d). Agent must bump GPT.INI Version; /force alone is not a substitute for correct versioning in production reconcile, but /force will re-read .pol on demand.",
+			appliedNoForce, valNF, errNF, appliedForce, valF),
+		ClientSKUNote: "gpsvc version check is core GP behavior; /force bypasses the skip",
 	})
 
 	t.Cleanup(func() { deleteRegKey(t, `HKLM:\Software\Policies\DadJokeSpike`) })
 
-	if applied {
-		t.Fatalf("policy applied despite no GPT.INI version bump (present=%v val=%d)", present, val)
+	if appliedNoForce {
+		t.Fatalf("policy applied on non-force refresh despite no GPT.INI version bump (val=%d)", valNF)
 	}
 }
 
