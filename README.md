@@ -42,7 +42,7 @@ Only what exists on `main` today:
 - **Versioned low-level policies** — opaque JSON desired state per machine with monotonic versions (`expected_version` optimistic concurrency); agents fetch applied/desired versions via AgentAPI.
 - **One-shot jobs** — enqueue `powershell` or `cmd` scripts; agent claims under a Job Object with hard timeouts, 64 KiB I/O caps, and local JSONL audit.
 - **Events** — agent telemetry ingest with idempotent `event_id`s and a 30-day MongoDB TTL.
-- **Facts & usage** — AgentAPI `POST /v1/facts` append-only ingest (idempotent `(stream_id, seq)`, configurable retention via `DAD_JOKE_FACTS_RETENTION_DAYS`, default 30 days); ControlAPI `GET /v1/machines/{machine_id}/usage?date=` returns per-app `seconds` / `fg_seconds` for one machine-local calendar day.
+- **Facts & usage** — Windows agent samples interactive sessions (`session.state`) and per-user processes (`proc.sample`) on `sample_interval_seconds` (default 60), queues batches under `ProgramData\DadJoke\facts\` (20 MiB cap, `SYSTEM`+`Administrators` ACL), and uploads to AgentAPI `POST /v1/facts` with durable retry. Ingest is append-only and idempotent on `(stream_id, seq)` (retention via `DAD_JOKE_FACTS_RETENTION_DAYS`, default 30 days). ControlAPI `GET /v1/machines/{machine_id}/usage?date=` returns per-app `seconds` / `fg_seconds` for one machine-local calendar day.
 - **Self-update** — SHA-256–verified updates from GitHub Releases (poll interval default 60s); automatic service restart after apply.
 - **Multi-tenant backend** — local email/password auth, revocable sessions (`dj_ses_…`), agent tokens (`dj_agt_…`), API keys (`dj_pat_…`).
 - **Remote MCP** — Streamable HTTP at `/mcp` with eight tools: `list_machines`, `get_machine`, `set_policy`, `run_script`, `get_job`, `list_events`, `get_usage`, `manage_agent_tokens`.
@@ -268,14 +268,15 @@ Create an agent token on the server first (`dj_agt_…`). Then, from an elevated
 <!-- docs-check:install-flags -->
 
 ```powershell
-.\dad-joke-windows-amd64.exe install --token dj_agt_<64 hex> --backend-url https://api.your-server.example --heartbeat-interval 60
+.\dad-joke-windows-amd64.exe install --token dj_agt_<64 hex> --backend-url https://api.your-server.example --heartbeat-interval 60 --sample-interval 60
 ```
 
 | Flag | Required | Notes |
 | --- | --- | --- |
 | `--token` | No | Backend-issued agent token (e.g. `dj_agt_…`). If omitted, a local 64-char hex token is generated and printed once. Empty/whitespace values are rejected. |
-| `--backend-url` | No | AgentAPI base URL. Must be `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`). No URL userinfo. Empty = local-only (no heartbeat). |
+| `--backend-url` | No | AgentAPI base URL. Must be `https://` except loopback `http://` (`127.0.0.1` / `::1` / `localhost`). No URL userinfo. Empty = local-only (no heartbeat / no facts upload; sampler still queues non-empty batches locally). |
 | `--heartbeat-interval` | No | Seconds (≥ 1). Default when unset in config is `60`. |
+| `--sample-interval` | No | Facts sampling period in seconds (`15..300`). Default when unset in config is `60`. Preserved across reinstall/self-update unless this flag is passed. |
 
 <!-- /docs-check:install-flags -->
 
@@ -284,7 +285,8 @@ Install outcome lines include `machine_id=…` and `token=…` / `token=(set fro
 ### What install changes on the machine
 
 - Copies the binary to `C:\Program Files\DadJoke\dad-joke.exe`
-- Writes `C:\ProgramData\DadJoke\config.json` (`machine_id`, `token`, optional `backend_url` / `heartbeat_interval_seconds`, release poll settings)
+- Writes `C:\ProgramData\DadJoke\config.json` (`machine_id`, `token`, optional `backend_url` / `heartbeat_interval_seconds` / `sample_interval_seconds`, release poll settings)
+- Creates `C:\ProgramData\DadJoke\facts\` durable upload queue (`SYSTEM` + `Administrators` only)
 - Registers Windows service **`DadJoke`** (LocalSystem, delayed auto-start, SCM restart recovery)
 - Adds outbound firewall rule **`DadJoke`** for the installed binary
 - Applies `SYSTEM` + `Administrators` ACLs on install and data paths

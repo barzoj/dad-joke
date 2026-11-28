@@ -12,19 +12,22 @@ import (
 
 func TestValidateMachineTimeZone(t *testing.T) {
 	t.Parallel()
-	if err := validateMachineTimeZone("UTC", 0); err != nil {
+	if err := validateMachineTimeZone("UTC", ptrInt32(0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateMachineTimeZone("", 0); err == nil {
+	if err := validateMachineTimeZone("UTC", nil); err == nil {
+		t.Fatal("nil utc_offset_minutes")
+	}
+	if err := validateMachineTimeZone("", ptrInt32(0)); err == nil {
 		t.Fatal("empty time_zone")
 	}
-	if err := validateMachineTimeZone(strings.Repeat("a", 65), 0); err == nil {
+	if err := validateMachineTimeZone(strings.Repeat("a", 65), ptrInt32(0)); err == nil {
 		t.Fatal("time_zone too long")
 	}
-	if err := validateMachineTimeZone("UTC", 841); err == nil {
+	if err := validateMachineTimeZone("UTC", ptrInt32(841)); err == nil {
 		t.Fatal("offset too large")
 	}
-	if err := validateMachineTimeZone("UTC", -841); err == nil {
+	if err := validateMachineTimeZone("UTC", ptrInt32(-841)); err == nil {
 		t.Fatal("offset too small")
 	}
 }
@@ -48,7 +51,7 @@ func TestValidatePostFactsRequest(t *testing.T) {
 		Seq:              1,
 		SentAt:           time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC),
 		TimeZone:         "UTC",
-		UtcOffsetMinutes: 0,
+		UtcOffsetMinutes: ptrInt32(0),
 		Facts:            []agentapi.FactItem{},
 	}
 	if err := validatePostFactsRequest(valid); err != nil {

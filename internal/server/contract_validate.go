@@ -25,8 +25,11 @@ const (
 	factExesMaxItems  = 200
 )
 
-// validateMachineTimeZone enforces HeartbeatRequest / PostFactsRequest zone length/offset bounds.
-func validateMachineTimeZone(timeZone string, utcOffsetMinutes int32) error {
+// validateMachineTimeZone enforces HeartbeatRequest / PostFactsRequest zone
+// length/offset bounds. utcOffsetMinutes must be present (non-nil): omission
+// and JSON null bind to nil on the generated *int32 field and are rejected so
+// a missing offset cannot silently become 0.
+func validateMachineTimeZone(timeZone string, utcOffsetMinutes *int32) error {
 	if !utf8.ValidString(timeZone) {
 		return fmt.Errorf("time_zone must be valid UTF-8")
 	}
@@ -34,7 +37,10 @@ func validateMachineTimeZone(timeZone string, utcOffsetMinutes int32) error {
 	if n < timeZoneMinLen || n > timeZoneMaxLen {
 		return fmt.Errorf("time_zone must be 1..64 characters")
 	}
-	if utcOffsetMinutes < utcOffsetMin || utcOffsetMinutes > utcOffsetMax {
+	if utcOffsetMinutes == nil {
+		return fmt.Errorf("utc_offset_minutes is required")
+	}
+	if *utcOffsetMinutes < utcOffsetMin || *utcOffsetMinutes > utcOffsetMax {
 		return fmt.Errorf("utc_offset_minutes must be between %d and %d", utcOffsetMin, utcOffsetMax)
 	}
 	return nil
@@ -171,7 +177,8 @@ func validateFactsBatchSemantics(body *agentapi.PostFactsRequest, now time.Time,
 		return err
 	}
 	sentAt := body.SentAt.UTC()
-	if err := usage.CheckZoneOffset(sentAt, body.TimeZone, body.UtcOffsetMinutes); err != nil {
+	// Presence already enforced by validatePostFactsRequest / validateMachineTimeZone.
+	if err := usage.CheckZoneOffset(sentAt, body.TimeZone, *body.UtcOffsetMinutes); err != nil {
 		return err
 	}
 	oldest := now.UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)

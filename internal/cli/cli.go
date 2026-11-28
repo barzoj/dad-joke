@@ -19,15 +19,19 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/barzoj/dad-joke/internal/buildinfo"
 	"github.com/barzoj/dad-joke/internal/config"
+	"github.com/barzoj/dad-joke/internal/factsq"
+	"github.com/barzoj/dad-joke/internal/factsup"
 	"github.com/barzoj/dad-joke/internal/heartbeat"
 	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/jobs"
+	"github.com/barzoj/dad-joke/internal/sampler"
 	"github.com/barzoj/dad-joke/internal/service"
 	"github.com/barzoj/dad-joke/internal/updater"
 )
@@ -56,13 +60,29 @@ type UpdateApplier interface {
 	Apply(ctx context.Context, opts updater.ApplyOptions) error
 }
 
+// DefaultAgentGroup returns the production service.Agent set: updater,
+// heartbeat, jobs, facts sampler, and facts uploader. Sampler and uploader
+// share one durable factsq under ProgramData\DadJoke\facts.
+func DefaultAgentGroup() service.Group {
+	handoff := jobs.NewHandoff()
+	paths := installer.DefaultPaths()
+	factsQ := &factsq.Queue{Dir: filepath.Join(paths.DataDir, "facts")}
+	return service.Group{
+		updater.NewPoller(),
+		heartbeat.New(handoff),
+		jobs.New(handoff),
+		sampler.New(factsQ),
+		factsup.New(factsQ),
+	}
+}
+
 // usageText is the canonical help / usage string.
 const usageText = `Usage: dad-joke <command> [flags]
 
 Commands:
   version                 Print embedded build version and commit
   install [flags]         Install the DadJoke Windows Service (Administrator required)
-                          [--token SECRET] [--backend-url URL] [--heartbeat-interval SECONDS]
+                          [--token SECRET] [--backend-url URL] [--heartbeat-interval SECONDS] [--sample-interval SECONDS]
   uninstall               Uninstall the DadJoke Windows Service (Administrator required)
   run                     Run as the DadJoke Windows Service
   apply-update            Apply a verified staged binary (internal helper)
@@ -82,14 +102,7 @@ func Run(args []string, deps Dependencies) int {
 		deps.Installer = installer.New()
 	}
 	if deps.Runner == nil {
-		handoff := jobs.NewHandoff()
-		deps.Runner = service.NewRunner(service.Options{
-			Agent: service.Group{
-				updater.NewPoller(),
-				heartbeat.New(handoff),
-				jobs.New(handoff),
-			},
-		})
+		deps.Runner = service.NewRunner(service.Options{Agent: DefaultAgentGroup()})
 	}
 	if deps.Applier == nil {
 		deps.Applier = &updater.Applier{
@@ -183,6 +196,20 @@ func parseInstallArgs(args []string) (installer.InstallOptions, error) {
 			}
 			opts.HeartbeatIntervalSet = true
 			opts.HeartbeatIntervalSeconds = n
+		case "--sample-interval":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--sample-interval requires an integer")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --sample-interval %q", args[i])
+			}
+			if err := config.ValidateSampleInterval(n); err != nil {
+				return opts, fmt.Errorf("invalid --sample-interval %q: %w", args[i], err)
+			}
+			opts.SampleIntervalSet = true
+			opts.SampleIntervalSeconds = n
 		default:
 			return opts, fmt.Errorf("unexpected argument %q", a)
 		}

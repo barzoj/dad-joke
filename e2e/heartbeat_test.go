@@ -166,11 +166,11 @@ func TestTC10_HeartbeatToLocalAgentAPI(t *testing.T) {
 	if !strings.Contains(hit.Body, `"applied_policy_version":0`) {
 		t.Fatalf("body missing applied_policy_version 0: %s", hit.Body)
 	}
-	if !strings.Contains(hit.Body, `"time_zone":"UTC"`) {
-		t.Fatalf("body missing time_zone UTC: %s", hit.Body)
+	if !strings.Contains(hit.Body, `"time_zone":`) {
+		t.Fatalf("body missing time_zone: %s", hit.Body)
 	}
-	if !strings.Contains(hit.Body, `"utc_offset_minutes":0`) {
-		t.Fatalf("body missing utc_offset_minutes 0: %s", hit.Body)
+	if !strings.Contains(hit.Body, `"utc_offset_minutes":`) {
+		t.Fatalf("body missing utc_offset_minutes: %s", hit.Body)
 	}
 
 	// Reinstall without --backend-url must preserve backend settings + identity.

@@ -31,6 +31,11 @@ type InstallOptions struct {
 	HeartbeatIntervalSet bool
 	// HeartbeatIntervalSeconds is the heartbeat period when HeartbeatIntervalSet is true.
 	HeartbeatIntervalSeconds int
+
+	// SampleIntervalSet is true when --sample-interval was explicitly passed.
+	SampleIntervalSet bool
+	// SampleIntervalSeconds is the facts sample period when SampleIntervalSet is true.
+	SampleIntervalSeconds int
 }
 
 // InstallOutcome is returned after a successful Install so the CLI can print
@@ -44,8 +49,8 @@ type InstallOutcome struct {
 // reconcileConfig builds the desired on-disk config from an optional existing
 // document and install options. It never silently rotates a present machine_id
 // or token unless --token is explicitly supplied (token only). Without
-// --backend-url / --heartbeat-interval, existing backend_url and
-// heartbeat_interval_seconds are preserved across reinstalls.
+// --backend-url / --heartbeat-interval / --sample-interval, existing backend_url,
+// heartbeat_interval_seconds, and sample_interval_seconds are preserved across reinstalls.
 func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Config, InstallOutcome, error) {
 	cfg := config.Default()
 	if existing != nil {
@@ -61,6 +66,9 @@ func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Confi
 		}
 		if cfg.HeartbeatIntervalSeconds < 1 {
 			cfg.HeartbeatIntervalSeconds = config.DefaultHeartbeatIntervalSeconds
+		}
+		if cfg.SampleIntervalSeconds < 1 {
+			cfg.SampleIntervalSeconds = config.DefaultSampleIntervalSeconds
 		}
 	}
 
@@ -110,6 +118,13 @@ func reconcileConfig(existing *config.Config, opts InstallOptions) (config.Confi
 			return config.Config{}, out, fmt.Errorf("%w: heartbeat_interval_seconds must be >= 1 (got %d)", config.ErrInvalid, opts.HeartbeatIntervalSeconds)
 		}
 		cfg.HeartbeatIntervalSeconds = opts.HeartbeatIntervalSeconds
+	}
+
+	if opts.SampleIntervalSet {
+		if err := config.ValidateSampleInterval(opts.SampleIntervalSeconds); err != nil {
+			return config.Config{}, out, err
+		}
+		cfg.SampleIntervalSeconds = opts.SampleIntervalSeconds
 	}
 
 	if err := cfg.Validate(); err != nil {

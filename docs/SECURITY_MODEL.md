@@ -48,9 +48,9 @@ Rules that bind every implementation of these contracts:
 
 These controls exist in the current Windows agent / repository:
 
-- **LocalSystem service + ACL hardening** — install tree and `ProgramData` config allow `SYSTEM` and `Administrators` only.
-- **Local identity secrecy** — `machine_id` + install `token` in `C:\ProgramData\DadJoke\config.json`; raw token must not appear in service logs, error strings, or updater / GitHub Releases HTTP.
-- **AgentAPI heartbeat transport** — optional `backend_url` uses system CA TLS (≥1.2); cleartext only for loopback; redirects strip `Authorization` on host change; heartbeat failures never take down the service or updater.
+- **LocalSystem service + ACL hardening** — install tree and `ProgramData` config allow `SYSTEM` and `Administrators` only. The durable facts queue at `C:\ProgramData\DadJoke\facts\` (batch files, `state.json`, `rejected\`) uses the same `SYSTEM` + `Administrators` ACL; a Standard User cannot read, write, or delete queue files.
+- **Local identity secrecy** — `machine_id` + install `token` in `C:\ProgramData\DadJoke\config.json`; raw token must not appear in service logs, error strings, updater / GitHub Releases HTTP, or facts-uploader logs.
+- **AgentAPI heartbeat / facts transport** — optional `backend_url` uses system CA TLS (≥1.2); cleartext only for loopback; redirects strip `Authorization` on host change; heartbeat and facts-upload failures never take down the service, updater, or sampler. Facts batches retry with identical bytes for `(stream_id, seq)` idempotency; `401`/`403` retain the batch and back off without logging the token.
 - **HTTPS download policy** — release API and asset URLs must be HTTPS (loopback HTTP only for local tests); redirects are re-validated.
 - **Cryptographic update verification** — staged `dad-joke-windows-amd64.exe` must match the published `.sha256` sidecar before apply.
 - **Apply path allowlist** — `apply-update` may only replace the installed binary from a staging path under `ProgramData\DadJoke\updates\...`.

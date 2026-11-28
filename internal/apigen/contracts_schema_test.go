@@ -152,6 +152,9 @@ func TestOpenAPI_FactsAndUsageContractShapes(t *testing.T) {
 	if !strings.Contains(postFacts, "minimum: -840") || !strings.Contains(postFacts, "maximum: 840") {
 		t.Fatal("PostFactsRequest utc_offset_minutes missing −840..840 bounds")
 	}
+	if !strings.Contains(postFacts, "nullable: true") {
+		t.Fatal("PostFactsRequest utc_offset_minutes must be nullable so Go binds *int32 (omission ≠ 0)")
+	}
 
 	factItem := schemaBlock(t, agentText, "FactItem")
 	if !strings.Contains(factItem, "minimum: 0") || !strings.Contains(factItem, "maximum: 300") {
