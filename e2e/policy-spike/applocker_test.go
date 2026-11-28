@@ -39,30 +39,28 @@ Remove-Item -LiteralPath %s -Recurse -Force
 	appidStartLat := time.Since(startAppID)
 	appidAfter := serviceState(t, "AppIDSvc")
 
-	// Already-running process: start BEFORE deny, then apply, then assert still alive.
+	// Already-running process: start BEFORE deny via CreateProcessAsUser (same
+	// logon path as other tests), then apply, then assert still alive.
 	alreadyRunningNote := "not measured"
-	prePID := ""
+	prePID := uint32(0)
 	{
-		out, err := powershell(t, fmt.Sprintf(`
-$ErrorActionPreference='Stop'
-$u = %s; $p = %s; $exe = %s
-$task = 'djspike_al_pre_' + [guid]::NewGuid().ToString('N').Substring(0,8)
-Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
-$action = New-ScheduledTaskAction -Execute $exe -Argument '-n 90 127.0.0.1'
-$principal = New-ScheduledTaskPrincipal -UserId $u -LogonType Password -RunLevel Limited
-Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
-Set-ScheduledTask -TaskName $task -User $u -Password $p | Out-Null
-Start-ScheduledTask -TaskName $task
-Start-Sleep -Seconds 2
-$proc = Get-Process | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
-if (-not $proc) { throw 'pre-policy probe process did not start' }
-Write-Output $proc.Id
-`, quotePS(u.Name), quotePS(u.Password), quotePS(probeExe)))
+		_ = ensureUserProfile(t, u)
+		pid, err := startAsUserAsync(t, u, probeExe, []string{"-n", "90", "127.0.0.1"})
 		if err != nil {
-			alreadyRunningNote = "not measured (pre-start failed: " + truncate(strings.TrimSpace(out)+" "+err.Error(), 120) + ")"
-			t.Logf("already-running pre-start: %v\n%s", err, out)
+			alreadyRunningNote = "not measured (pre-start failed: " + truncate(err.Error(), 120) + ")"
+			t.Logf("already-running pre-start: %v", err)
 		} else {
-			prePID = strings.TrimSpace(out)
+			time.Sleep(500 * time.Millisecond)
+			alive := mustPS(t, fmt.Sprintf(`
+$ErrorActionPreference='SilentlyContinue'
+$p = Get-Process -Id %d -ErrorAction SilentlyContinue
+if ($p) { 'alive' } else { 'gone' }
+`, pid))
+			if alive != "alive" {
+				alreadyRunningNote = "not measured (process exited immediately after start)"
+			} else {
+				prePID = pid
+			}
 		}
 	}
 
@@ -99,18 +97,18 @@ Set-AppLockerPolicy -XmlPolicy %s -Merge
 		t.Logf("Set-AppLockerPolicy: %v\n%s", err, out)
 	}
 
-	if prePID != "" && setPolicyOK {
+	if prePID != 0 && setPolicyOK {
 		alive := mustPS(t, fmt.Sprintf(`
 $ErrorActionPreference='SilentlyContinue'
-$p = Get-Process -Id %s -ErrorAction SilentlyContinue
+$p = Get-Process -Id %d -ErrorAction SilentlyContinue
 if ($p) { 'alive' } else { 'gone' }
 `, prePID))
 		if alive == "alive" {
-			alreadyRunningNote = "measured: pre-existing pid=" + prePID + " still running after deny (create-time enforcement)"
+			alreadyRunningNote = fmt.Sprintf("measured: pre-existing pid=%d still running after deny (create-time enforcement)", prePID)
 		} else {
-			alreadyRunningNote = "measured: pre-existing pid=" + prePID + " gone after deny"
+			alreadyRunningNote = fmt.Sprintf("measured: pre-existing pid=%d gone after deny", prePID)
 		}
-	} else if prePID != "" && !setPolicyOK {
+	} else if prePID != 0 && !setPolicyOK {
 		alreadyRunningNote = "not measured (policy set failed after pre-start)"
 	}
 
@@ -169,7 +167,8 @@ New-ItemProperty -Path %s -Name 'SpikeProbe' -PropertyType String -Value %s -For
 		{Key: `Software\Policies\Microsoft\Windows\SrpV2\Exe`, Value: "EnforcementMode", Type: regDWORD, Data: dwordData(1)},
 	}
 	appendMachinePol(t, polEntries)
-	bumpGPT(t, true, false, []csePair{{cseAppLocker, toolAppLocker}}, nil)
+	alPair, alDiscovery := appLockerExtFromMachine(t)
+	bumpGPT(t, true, false, []csePair{alPair}, nil)
 	polStart := time.Now()
 	_, _, polErr := refreshPolicy(t)
 	polLat := time.Since(polStart)
@@ -223,8 +222,8 @@ Write-Output $dst
 		NeedsRelogon:    "no",
 		NeedsReboot:     "no",
 		VisibleGpresult: boolYN(gpresultHas(t, "", "SrpV2") || gpresultHas(t, "", "AppLocker")),
-		Gotchas:         fmt.Sprintf("refresh err=%v EnforcementMode present=%v; %s; AppIDSvc stopped observed=%s", polErr, polPresent, writableTrap, stoppedState),
-		ClientSKUNote:   "Server/Pro may apply AppLocker CSE from .pol; Home will not — agent enforces SrpV2 itself on Home",
+		Gotchas:         fmt.Sprintf("refresh err=%v EnforcementMode present=%v; %s; AppIDSvc stopped observed=%s; GPT CSE pair cse=%s tool=%s; discovery=%s", polErr, polPresent, writableTrap, stoppedState, alPair.cse, alPair.tool, alDiscovery),
+		ClientSKUNote:   "Server/Pro may apply AppLocker CSE from .pol; Home will not — agent enforces SrpV2 itself on Home. Do not invent MMC tool GUIDs; GPExtensions exposes CSE only — pair with MS-GPOL NULL tool GUID when unverified.",
 	})
 
 	if appidAfter != "Running" {
@@ -246,7 +245,6 @@ $path = Join-Path $env:TEMP 'djspike_al_clear.xml'
 Set-Content -Path $path -Value $xml -Encoding UTF8
 try { Set-AppLockerPolicy -XmlPolicy $path } catch {}
 Remove-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2' -Recurse -Force
-Get-ScheduledTask | Where-Object { $_.TaskName -like 'djspike_al_pre_*' } | Unregister-ScheduledTask -Confirm:$false
 `)
 }
 

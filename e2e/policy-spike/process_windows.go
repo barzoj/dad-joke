@@ -159,6 +159,67 @@ func runAsUser(t testing.TB, u *testUser, exe string, args []string, wait time.D
 	return int(code), string(b), nil
 }
 
+// startAsUserAsync starts exe as u and returns the PID without waiting.
+// Uses the same LogonUser + CreateProcessAsUser path as runAsUser (avoids
+// scheduled-task password failures seen on hosted runners).
+func startAsUserAsync(t testing.TB, u *testUser, exe string, args []string) (pid uint32, err error) {
+	t.Helper()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	token, err := logonUser(u.Name, ".", u.Password, logonInteractive)
+	if err != nil {
+		token, err = logonUser(u.Name, ".", u.Password, logonNetwork)
+		if err != nil {
+			return 0, fmt.Errorf("LogonUser: %w", err)
+		}
+	}
+	defer token.Close()
+
+	var primary windows.Token
+	if err := windows.DuplicateTokenEx(token, windows.MAXIMUM_ALLOWED, nil, windows.SecurityImpersonation, windows.TokenPrimary, &primary); err != nil {
+		return 0, fmt.Errorf("DuplicateTokenEx: %w", err)
+	}
+	defer primary.Close()
+
+	parts := []string{quoteArg(exe)}
+	for _, a := range args {
+		parts = append(parts, quoteArg(a))
+	}
+	cmdline := strings.Join(parts, " ")
+	cmdPtr, err := syscall.UTF16PtrFromString(cmdline)
+	if err != nil {
+		return 0, err
+	}
+	appName, _ := syscall.UTF16PtrFromString(exe)
+
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	var pi windows.ProcessInformation
+	if err := windows.CreateProcessAsUser(
+		primary,
+		appName,
+		cmdPtr,
+		nil,
+		nil,
+		false,
+		createUnicodeEnvironment|createNewConsole,
+		nil,
+		nil,
+		&si,
+		&pi,
+	); err != nil {
+		return 0, err
+	}
+	_ = windows.CloseHandle(pi.Thread)
+	pid = pi.ProcessId
+	t.Cleanup(func() {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_ = windows.CloseHandle(pi.Process)
+	})
+	return pid, nil
+}
+
 func buildCmdline(exe string, args []string, outFile string) string {
 	// Wrap with cmd to capture exit and redirect.
 	parts := []string{quoteArg(exe)}

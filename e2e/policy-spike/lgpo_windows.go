@@ -26,12 +26,17 @@ const (
 	// Firewall CSE (MS-GPFAS); tool GUID matches CSE in common LGPO dumps.
 	cseFirewall = `{0E28E233-B7C3-45e5-A7AB-5F34E1028E7C}`
 	toolFW      = `{0E28E233-B7C3-45e5-A7AB-5F34E1028E7C}`
-	// AppLocker / SRP CSE + AppLocker MMC administrative tool extension.
-	cseAppLocker  = `{3AAE67FC-DAA8-4EE3-B85F-8161A808D5C3}`
-	toolAppLocker = `{B1BE8D78-6D31-4968-90A1-6C8B6D1C2F9D}`
+	// AppLocker / Application Identity CSE GUID (verified at runtime under
+	// HKLM\...\Winlogon\GPExtensions). Do not invent an admin-tool GUID —
+	// GPExtensions stores CSEs, not MMC snap-in tool GUIDs; when none is
+	// verifiable, register the CSE with the MS-GPOL NULL tool GUID.
+	cseAppLocker = `{3AAE67FC-DAA8-4EE3-B85F-8161A808D5C3}`
+	// MS-GPOL: vendors may specify a NULL GUID for the tool extension GUID.
+	toolGUIDNull = `{00000000-0000-0000-0000-000000000000}`
 )
 
 // csePair is one [{CSE}{Tool}] registration for GPT.INI extension lists.
+// Tool may be toolGUIDNull when no verifiable admin-tool GUID exists.
 type csePair struct {
 	cse  string
 	tool string
@@ -85,12 +90,97 @@ func writeGPT(t testing.TB, machineVer, userVer int, machineExt, userExt string)
 }
 
 func ensureExtPair(list, cse, tool string) string {
-	pair := "[" + strings.ToUpper(cse) + strings.ToUpper(tool) + "]"
+	cseU := strings.ToUpper(cse)
 	up := strings.ToUpper(list)
-	if strings.Contains(up, strings.ToUpper(cse)) {
+	if strings.Contains(up, cseU) {
 		return list
 	}
-	return list + pair
+	toolU := strings.ToUpper(tool)
+	if toolU == "" {
+		toolU = strings.ToUpper(toolGUIDNull)
+	}
+	return list + "[" + cseU + toolU + "]"
+}
+
+// appLockerExtFromMachine reads HKLM\...\Winlogon\GPExtensions for the
+// AppLocker CSE and returns a GPT pair. Never invents a tool GUID: if the
+// registry only exposes the CSE (typical), the tool half is MS-GPOL NULL.
+func appLockerExtFromMachine(t testing.TB) (pair csePair, discovery string) {
+	t.Helper()
+	out, err := powershell(t, fmt.Sprintf(`
+$ErrorActionPreference='Stop'
+$root = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\GPExtensions'
+$want = %s
+$lines = New-Object System.Collections.Generic.List[string]
+if (-not (Test-Path -LiteralPath $root)) {
+  Write-Output 'root=missing'
+  exit 0
+}
+$hit = $null
+Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
+  $name = $_.PSChildName
+  $p = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+  $dll = [string]$p.DllName
+  $disp = [string]$p.'(default)'
+  if (-not $disp) { $disp = [string]$p.DisplayName }
+  $lines.Add(('ext name=' + $name + ' dll=' + $dll + ' display=' + $disp))
+  if ($name -ieq $want -or $disp -match 'AppLocker' -or $dll -match '(?i)AppID|AppLocker') {
+    if (-not $hit) { $hit = $name }
+  }
+}
+if ($hit) {
+  Write-Output ('cse=' + $hit)
+} else {
+  Write-Output 'cse=not-found'
+}
+Write-Output '---'
+$lines | ForEach-Object { Write-Output $_ }
+`, quotePS(cseAppLocker)))
+	if err != nil {
+		t.Logf("GPExtensions probe: %v\n%s", err, out)
+		return csePair{cse: cseAppLocker, tool: toolGUIDNull},
+			"GPExtensions probe failed; registered CSE " + cseAppLocker + " with MS-GPOL NULL tool GUID (no invented tool GUID)"
+	}
+	cse := cseAppLocker
+	found := false
+	var extLines []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "cse=") {
+			v := strings.TrimPrefix(line, "cse=")
+			if v != "" && !strings.EqualFold(v, "not-found") {
+				cse = v
+				if !strings.HasPrefix(cse, "{") {
+					cse = "{" + strings.Trim(cse, "{}") + "}"
+				}
+				found = true
+			}
+			continue
+		}
+		if line == "---" || line == "" || line == "root=missing" {
+			continue
+		}
+		if strings.HasPrefix(line, "ext ") {
+			extLines = append(extLines, line)
+		}
+	}
+	note := fmt.Sprintf("GPExtensions AppLocker CSE present=%v cse=%s; tool GUID not present under GPExtensions (CSE registration only); using MS-GPOL NULL tool GUID %s — not an invented snap-in GUID. sample_exts=%d",
+		found, cse, toolGUIDNull, len(extLines))
+	if len(extLines) > 0 {
+		// Keep a short, non-sensitive sample for CI logs/findings.
+		sample := extLines
+		if len(sample) > 8 {
+			sample = sample[:8]
+		}
+		note += "; " + strings.Join(sample, "; ")
+		t.Logf("AppLocker GPExtensions discovery: %s", note)
+		for _, l := range extLines {
+			t.Logf("GPExtensions %s", l)
+		}
+	} else {
+		t.Logf("AppLocker GPExtensions discovery: %s", note)
+	}
+	return csePair{cse: cse, tool: toolGUIDNull}, note
 }
 
 func bumpGPT(t testing.TB, bumpMachine, bumpUser bool, machineExtras, userExtras []csePair) {
