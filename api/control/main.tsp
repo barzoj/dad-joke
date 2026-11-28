@@ -2,6 +2,7 @@ import "@typespec/http";
 import "@typespec/openapi";
 import "../common/errors.tsp";
 import "../common/events.tsp";
+import "../common/facts.tsp";
 import "../common/jobs.tsp";
 import "../common/policy.tsp";
 
@@ -565,7 +566,35 @@ interface Machines {
     @header contentType: "application/json";
     @body body: EventListResponse;
   } | StandardErrors;
+
+  /**
+   * Per-app usage totals for one machine-local calendar day.
+   * `date` is required (`YYYY-MM-DD`). There is no `tz` query parameter;
+   * the day is interpreted in the machine's reported IANA zone.
+   * Missing/unknown machine → `404`.
+   */
+  @get
+  @route("{machine_id}/usage")
+  @operationId("getMachineUsage")
+  op getUsage(
+    /** Machine id (UUIDv4). */
+    @path @format("uuid") machine_id: string,
+
+    /** Calendar day to summarize (`YYYY-MM-DD`). */
+    @query date: plainDate
+  ): {
+    @statusCode _: 200;
+    @header contentType: "application/json";
+    @body body: MachineUsage;
+  } | MachineUsageErrors;
 }
+
+/** Documented failure statuses for ControlAPI machine usage. */
+alias MachineUsageErrors = BadRequestError
+  | UnauthorizedError
+  | NotFoundError
+  | TooManyRequestsError
+  | ServiceUnavailableError;
 
 @route("/v1/jobs")
 interface Jobs {

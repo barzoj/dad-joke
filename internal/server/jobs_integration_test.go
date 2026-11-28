@@ -45,6 +45,8 @@ func TestIntegration_Jobs_AllAcceptanceCriteria(t *testing.T) {
 	code, hbBody := postHeartbeat(t, base, agentA, map[string]any{
 		"machine_id": machineID, "agent_version": "1", "hostname": "h",
 		"os_version": "Win", "applied_policy_version": 0,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %s", code, hbBody)
@@ -119,6 +121,8 @@ func TestIntegration_Jobs_AllAcceptanceCriteria(t *testing.T) {
 	code, hbBody = postHeartbeat(t, base, agentA, map[string]any{
 		"machine_id": machineID, "agent_version": "1", "hostname": "h",
 		"os_version": "Win", "applied_policy_version": 0,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("hb2: %d %s", code, hbBody)

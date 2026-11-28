@@ -172,6 +172,8 @@ func TestPolicyCRUD_HeartbeatReflectsVersion(t *testing.T) {
 		"hostname":               "kid-pc",
 		"os_version":             "Windows 11 Home",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %s", code, body)
@@ -199,6 +201,8 @@ func TestPolicyCRUD_HeartbeatReflectsVersion(t *testing.T) {
 		"hostname":               "kid-pc",
 		"os_version":             "Windows 11 Home",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat2: %d %s", code, body)

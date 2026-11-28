@@ -152,6 +152,8 @@ func TestAuth_WrongTokenTypeCrossAPI(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
 	req.Header.Set("Content-Type", "application/json")
@@ -196,6 +198,8 @@ func TestAuth_RevokedToken401AndAudit(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
 	req.Header.Set("Content-Type", "application/json")
@@ -420,6 +424,8 @@ func TestAuth_MissingBearerOnAgentAPI401(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
 	req.Header.Set("Content-Type", "application/json")
@@ -465,6 +471,8 @@ func TestAuth_ExpiredToken401(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
 	req.Header.Set("Content-Type", "application/json")
@@ -521,6 +529,8 @@ func TestAuth_RepeatedRevokedToken429(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	var saw429 bool
 	var retryAfter string

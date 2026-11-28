@@ -144,7 +144,8 @@ func New(cfg Config) (*Server, error) {
 
 	controlHandler := controlapi.HandlerWithOptions(
 		controlapi.NewStrictHandlerWithOptions(control, nil, controlapi.StrictHTTPServerOptions{
-			RequestErrorHandlerFunc: writeRequestBindError,
+			RequestErrorHandlerFunc:  writeRequestBindError,
+			ResponseErrorHandlerFunc: writeResponseError,
 		}),
 		controlapi.StdHTTPServerOptions{
 			Middlewares: []controlapi.MiddlewareFunc{
@@ -156,7 +157,8 @@ func New(cfg Config) (*Server, error) {
 	)
 	agentHandler := agentapi.HandlerWithOptions(
 		agentapi.NewStrictHandlerWithOptions(agent, nil, agentapi.StrictHTTPServerOptions{
-			RequestErrorHandlerFunc: writeRequestBindError,
+			RequestErrorHandlerFunc:  writeRequestBindError,
+			ResponseErrorHandlerFunc: writeResponseError,
 		}),
 		agentapi.StdHTTPServerOptions{
 			Middlewares:      []agentapi.MiddlewareFunc{agentAuthn.Middleware(store.TokenKindAgent)},
@@ -168,6 +170,8 @@ func New(cfg Config) (*Server, error) {
 	root.Handle("/v1/policy", agentHandler)
 	// Agent event ingest: tighter 256 KiB body limit (413 when exceeded).
 	root.Handle("POST /v1/events", limitBody(agentHandler, int64(store.EventBatchMaxBytes)))
+	// Agent facts ingest: same 256 KiB body limit (413 when exceeded).
+	root.Handle("POST /v1/facts", limitBody(agentHandler, int64(store.FactBatchMaxBytes)))
 	// Agent claim/result share the /v1/jobs prefix with ControlAPI get/cancel;
 	// method+path patterns keep agent auth on these mutating agent endpoints.
 	root.Handle("POST /v1/jobs/{id}/claim", agentHandler)

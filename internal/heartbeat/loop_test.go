@@ -207,6 +207,9 @@ func TestLoopSendsBearerMachineIDVersion(t *testing.T) {
 	if fc.lastBody.AppliedPolicyVersion != 0 {
 		t.Fatalf("applied_policy_version = %d", fc.lastBody.AppliedPolicyVersion)
 	}
+	if fc.lastBody.TimeZone != "UTC" || fc.lastBody.UtcOffsetMinutes != 0 {
+		t.Fatalf("timezone placeholder = %q/%d", fc.lastBody.TimeZone, fc.lastBody.UtcOffsetMinutes)
+	}
 	if strings.Contains(logs.joined(), cfg.Token) {
 		t.Fatalf("token leaked in logs: %s", logs.joined())
 	}

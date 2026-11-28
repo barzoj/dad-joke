@@ -323,6 +323,8 @@ func TestLocalAuth_SessionRejectedOnAgentAPI(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", strings.NewReader(string(hb)))
 	req.Header.Set("Content-Type", "application/json")

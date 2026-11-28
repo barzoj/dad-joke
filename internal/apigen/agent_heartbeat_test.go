@@ -27,6 +27,8 @@ func TestAgentAPI_Heartbeat_RoundTrip(t *testing.T) {
 		Hostname:             "kid-pc",
 		OsVersion:            "Windows 11 Home",
 		AppliedPolicyVersion: 2,
+		TimeZone:             "UTC",
+		UtcOffsetMinutes:     0,
 	})
 	if err != nil {
 		t.Fatalf("PostHeartbeatWithResponse: %v", err)
@@ -64,6 +66,8 @@ func TestAgentAPI_Heartbeat_ErrorResponse401(t *testing.T) {
 		Hostname:             "kid-pc",
 		OsVersion:            "Windows 11 Home",
 		AppliedPolicyVersion: 0,
+		TimeZone:             "UTC",
+		UtcOffsetMinutes:     0,
 	})
 	if err != nil {
 		t.Fatalf("PostHeartbeatWithResponse: %v", err)
@@ -95,6 +99,8 @@ func TestAgentAPI_Heartbeat_ErrorResponse429RetryAfter(t *testing.T) {
 		Hostname:             "kid-pc",
 		OsVersion:            "Windows 11 Home",
 		AppliedPolicyVersion: 0,
+		TimeZone:             "UTC",
+		UtcOffsetMinutes:     0,
 	})
 	if err != nil {
 		t.Fatalf("PostHeartbeatWithResponse: %v", err)

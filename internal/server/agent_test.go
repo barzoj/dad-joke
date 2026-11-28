@@ -69,6 +69,8 @@ func TestAgentHeartbeat_Authenticated(t *testing.T) {
 		"hostname":               "kid-pc",
 		"os_version":             "Windows 11 Home",
 		"applied_policy_version": 1,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat status = %d %s", code, body)
@@ -116,6 +118,8 @@ func TestAgentHeartbeat_CrossTenantIsolation(t *testing.T) {
 	code, body := postHeartbeat(t, base, tokenA, map[string]any{
 		"machine_id": machineID, "agent_version": "a1", "hostname": "host-a",
 		"os_version": "WinA", "applied_policy_version": 1,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("tenant A heartbeat: %d %s", code, body)
@@ -123,6 +127,8 @@ func TestAgentHeartbeat_CrossTenantIsolation(t *testing.T) {
 	code, body = postHeartbeat(t, base, tokenB, map[string]any{
 		"machine_id": machineID, "agent_version": "b1", "hostname": "host-b",
 		"os_version": "WinB", "applied_policy_version": 9,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("tenant B heartbeat: %d %s", code, body)
@@ -166,6 +172,8 @@ func TestAgentHeartbeat_InvalidMachineID400(t *testing.T) {
 			code, body := postHeartbeat(t, base, token, map[string]any{
 				"machine_id": tc.id, "agent_version": "0.0.1", "hostname": "pc",
 				"os_version": "Win", "applied_policy_version": 0,
+				"time_zone":          "UTC",
+				"utc_offset_minutes": 0,
 			})
 			if code != http.StatusBadRequest {
 				t.Fatalf("status = %d %s", code, body)
@@ -210,6 +218,8 @@ func TestAgentHeartbeat_PolicyAndPendingJobs(t *testing.T) {
 	code, body := postHeartbeat(t, base, token, map[string]any{
 		"machine_id": machineID, "agent_version": "0.0.1", "hostname": "pc",
 		"os_version": "Win", "applied_policy_version": 1,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("heartbeat: %d %s", code, body)
@@ -247,6 +257,8 @@ func TestAgentHeartbeat_UpsertInPlaceNoExtraDocs(t *testing.T) {
 		code, body := postHeartbeat(t, base, token, map[string]any{
 			"machine_id": machineID, "agent_version": ver, "hostname": "pc",
 			"os_version": "Win", "applied_policy_version": i,
+			"time_zone":          "UTC",
+			"utc_offset_minutes": 0,
 		})
 		if code != http.StatusOK {
 			t.Fatalf("heartbeat %d: %d %s", i, code, body)

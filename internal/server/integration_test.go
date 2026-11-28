@@ -122,6 +122,8 @@ func TestIntegration_AuthTokenCRUDAndRevoke(t *testing.T) {
 		"hostname":               "pc",
 		"os_version":             "Windows 11",
 		"applied_policy_version": 0,
+		"time_zone":              "UTC",
+		"utc_offset_minutes":     0,
 	})
 	req, _ := http.NewRequest(http.MethodPost, base+"/v1/heartbeat", bytes.NewReader(hb))
 	req.Header.Set("Content-Type", "application/json")
@@ -204,6 +206,8 @@ func TestIntegration_HeartbeatMachinesTenantIsolationAndUpsert(t *testing.T) {
 	code, body := postHeartbeat(t, base, tokenA, map[string]any{
 		"machine_id": machineID, "agent_version": "a1", "hostname": "host-a",
 		"os_version": "WinA", "applied_policy_version": 1,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("tenant A heartbeat: %d %s", code, body)
@@ -211,6 +215,8 @@ func TestIntegration_HeartbeatMachinesTenantIsolationAndUpsert(t *testing.T) {
 	code, body = postHeartbeat(t, base, tokenB, map[string]any{
 		"machine_id": machineID, "agent_version": "b9", "hostname": "host-b",
 		"os_version": "WinB", "applied_policy_version": 9,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("tenant B heartbeat: %d %s", code, body)
@@ -220,6 +226,8 @@ func TestIntegration_HeartbeatMachinesTenantIsolationAndUpsert(t *testing.T) {
 	code, body = postHeartbeat(t, base, tokenB, map[string]any{
 		"machine_id": machineID, "agent_version": "b-spoof", "hostname": "spoofed",
 		"os_version": "WinB", "applied_policy_version": 99,
+		"time_zone":          "UTC",
+		"utc_offset_minutes": 0,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("spoof heartbeat: %d %s", code, body)
@@ -245,6 +253,8 @@ func TestIntegration_HeartbeatMachinesTenantIsolationAndUpsert(t *testing.T) {
 		code, body = postHeartbeat(t, base, tokenA, map[string]any{
 			"machine_id": machineID, "agent_version": "a-refresh", "hostname": "host-a",
 			"os_version": "WinA", "applied_policy_version": 2,
+			"time_zone":          "UTC",
+			"utc_offset_minutes": 0,
 		})
 		if code != http.StatusOK {
 			t.Fatalf("repeat heartbeat: %d %s", code, body)

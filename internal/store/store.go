@@ -110,6 +110,15 @@ const (
 	EventTTLSeconds       = 30 * 24 * 60 * 60 // 30 days
 )
 
+// Fact ingest hard limits (mirrored in api/common/facts.tsp).
+const (
+	FactBatchMaxCount  = 500
+	FactBatchMaxBytes  = 256 * 1024
+	FactDurMaxSeconds  = 300
+	FactTitleMaxLen    = 256 // characters/runes, not bytes
+	FactTTLSeconds     = 30 * 24 * 60 * 60 // 30 days
+)
+
 // EventQuery filters control-plane event reads.
 // Results are ordered by ts ascending, then event_id ascending (tie-breaker).
 // Cursor resumes strictly after the encoded (ts, event_id) pair.

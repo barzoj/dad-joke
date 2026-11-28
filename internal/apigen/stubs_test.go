@@ -100,6 +100,34 @@ func (s agentStub) PostEvents(context.Context, agentapi.PostEventsRequestObject)
 	return agentapi.PostEvents204Response{}, nil
 }
 
+func (s agentStub) PostFacts(_ context.Context, req agentapi.PostFactsRequestObject) (agentapi.PostFactsResponseObject, error) {
+	switch s.mode {
+	case "unauthorized":
+		return agentapi.PostFacts401JSONResponse{
+			Code: "unauthorized", Message: "missing or invalid agent token", RequestId: "req-facts-401",
+		}, nil
+	case "rate_limited":
+		return agentapi.PostFacts429JSONResponse{
+			Body: agentapi.ErrorResponse{
+				Code: "rate_limited", Message: "too many fact batches", RequestId: "req-facts-429",
+			},
+			Headers: agentapi.PostFacts429ResponseHeaders{RetryAfter: "15"},
+		}, nil
+	case "bad_request":
+		return agentapi.PostFacts400JSONResponse{
+			Code: "bad_request", Message: "invalid fact batch", RequestId: "req-facts-400",
+		}, nil
+	}
+	seq := int64(1)
+	if req.Body != nil {
+		seq = req.Body.Seq
+	}
+	return agentapi.PostFacts200JSONResponse{
+		AcceptedSeq: seq,
+		Duplicate:   false,
+	}, nil
+}
+
 func (s agentStub) PostHeartbeat(_ context.Context, req agentapi.PostHeartbeatRequestObject) (agentapi.PostHeartbeatResponseObject, error) {
 	switch s.mode {
 	case "unauthorized":
@@ -316,6 +344,33 @@ func (s controlStub) ListMachineEvents(_ context.Context, req controlapi.ListMac
 				Type:    "start",
 				Payload: map[string]any{"ok": true},
 			},
+		},
+	}, nil
+}
+
+func (s controlStub) GetMachineUsage(_ context.Context, req controlapi.GetMachineUsageRequestObject) (controlapi.GetMachineUsageResponseObject, error) {
+	switch s.mode {
+	case "unauthorized":
+		return controlapi.GetMachineUsage401JSONResponse{
+			Code: "unauthorized", Message: "missing or invalid control token", RequestId: "req-usage-401",
+		}, nil
+	case "rate_limited":
+		return controlapi.GetMachineUsage429JSONResponse{
+			Body: controlapi.ErrorResponse{
+				Code: "rate_limited", Message: "too many usage reads", RequestId: "req-usage-429",
+			},
+			Headers: controlapi.GetMachineUsage429ResponseHeaders{RetryAfter: "20"},
+		}, nil
+	case "not_found":
+		return controlapi.GetMachineUsage404JSONResponse{
+			Code: "not_found", Message: "machine not found", RequestId: "req-usage-404",
+		}, nil
+	}
+	return controlapi.GetMachineUsage200JSONResponse{
+		Date:     req.Params.Date,
+		TimeZone: "UTC",
+		Apps: []controlapi.AppUsage{
+			{Exe: "notepad.exe", Seconds: 12, FgSeconds: 5},
 		},
 	}, nil
 }

@@ -3,6 +3,7 @@ module github.com/barzoj/dad-joke
 go 1.26.0
 
 require (
+	github.com/getkin/kin-openapi v0.153.0
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oapi-codegen/runtime v1.9.1
@@ -14,9 +15,9 @@ require (
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
-	github.com/getkin/kin-openapi v0.153.0 // indirect
 	github.com/go-openapi/jsonpointer v1.0.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/oapi-codegen/oapi-codegen/v2 v2.9.0 // indirect
 	github.com/oasdiff/yaml v0.1.3 // indirect

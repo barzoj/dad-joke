@@ -216,6 +216,9 @@ func (l *Loop) beatOnce(ctx context.Context, client HeartbeatClient, cfg config.
 		Hostname:             hostname,
 		OsVersion:            l.Host.OSVersion(),
 		AppliedPolicyVersion: l.AppliedPolicyVersion,
+		// Placeholder until T-20 wires the real Windows→IANA zone.
+		TimeZone:         "UTC",
+		UtcOffsetMinutes: 0,
 	}
 	resp, err := client.PostHeartbeatWithResponse(ctx, body, bearerEditor(cfg.Token))
 	if err != nil {
