@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +94,12 @@ func (m *mockFactsAPI) setDropResponses(n int) {
 	m.mu.Unlock()
 }
 
+func (m *mockFactsAPI) clearHits() {
+	m.mu.Lock()
+	m.hits = nil
+	m.mu.Unlock()
+}
+
 func (m *mockFactsAPI) Hits() []factsHit {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,6 +112,57 @@ func (m *mockFactsAPI) uniqueAccepted(key string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.acceptedUnique[key]
+}
+
+func parseFactsMeta(body string) (streamID string, seq int64) {
+	var meta struct {
+		StreamID string `json:"stream_id"`
+		Seq      int64  `json:"seq"`
+	}
+	_ = json.Unmarshal([]byte(body), &meta)
+	return meta.StreamID, meta.Seq
+}
+
+// waitForFactSeqs waits until want appears in order as a subsequence of
+// uploaded (stream_id, seq) pairs. Other seqs from a live sampler may
+// interleave; that is expected on Windows runners with interactive sessions.
+func waitForFactSeqs(t *testing.T, mock *mockFactsAPI, stream string, want []int64, timeout time.Duration) []factsHit {
+	t.Helper()
+	if len(want) == 0 {
+		t.Fatal("waitForFactSeqs: empty want")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		hits := mock.Hits()
+		idx := 0
+		for _, h := range hits {
+			sid, seq := parseFactsMeta(h.Body)
+			if sid != stream {
+				continue
+			}
+			if idx < len(want) && seq == want[idx] {
+				idx++
+			}
+		}
+		if idx == len(want) {
+			return hits
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for stream=%s seqs=%v; hits=%d matched=%d", stream, want, len(hits), idx)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func countFactSeq(hits []factsHit, stream string, seq int64) int {
+	n := 0
+	for _, h := range hits {
+		sid, s := parseFactsMeta(h.Body)
+		if sid == stream && s == seq {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *mockFactsAPI) handleFacts(w http.ResponseWriter, r *http.Request) {
@@ -208,9 +266,12 @@ type onDiskFactsState struct {
 }
 
 // seedFactsBatches writes n PostFactsRequest batch files into the durable queue
-// while the service is stopped (E2E-only; no production test hooks). Headless
-// Session 0 has no interactive sessions, so production sampler correctly
-// enqueues nothing — seeding drives uploader/ACL/stream tests deterministically.
+// while the service is stopped (E2E-only; no production test hooks).
+//
+// Windows CI runners often have interactive sessions, so the live sampler may
+// already have advanced next_seq / uploaded batches before seeding. Callers
+// must wait for the returned seqs specifically (waitForFactSeqs), not assume
+// hits[0] is the seeded batch.
 func seedFactsBatches(t *testing.T, n int, restart bool) (streamID string, firstSeq, lastSeq int64) {
 	t.Helper()
 	if n < 1 {
@@ -238,6 +299,9 @@ func seedFactsBatches(t *testing.T, n int, restart bool) (streamID string, first
 	if err := json.Unmarshal(raw, &st); err != nil || st.StreamID == "" || st.NextSeq < 1 {
 		t.Fatalf("bad state.json: %v %s", err, raw)
 	}
+	// Remove any unacked live-sampler batches so the seeded files are the
+	// oldest Peek targets (next_seq stays — never reuse seq).
+	drainPendingBatchFiles(t)
 	streamID = st.StreamID
 	firstSeq = st.NextSeq
 	seq := st.NextSeq
@@ -285,6 +349,27 @@ func seedFactsBatches(t *testing.T, n int, restart bool) (streamID string, first
 	return streamID, firstSeq, lastSeq
 }
 
+func drainPendingBatchFiles(t *testing.T) {
+	t.Helper()
+	dir := factsQueueDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "state.json" || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if _, err := strconv.ParseInt(strings.TrimSuffix(name, ".json"), 10, 64); err != nil {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("drain %s: %v", name, err)
+		}
+	}
+}
+
 func TestTC20_FactsSampleToLocalAgentAPI(t *testing.T) {
 	bin := testBinary(t)
 	cleanupInstall(t, bin)
@@ -310,9 +395,16 @@ func TestTC20_FactsSampleToLocalAgentAPI(t *testing.T) {
 		t.Fatalf("sample_interval_seconds = %v", cfg["sample_interval_seconds"])
 	}
 
-	_, _, _ = seedFactsBatches(t, 1, true)
-	hits := waitForFacts(t, mock, 1, 45*time.Second)
-	hit := hits[0]
+	stream, seq, _ := seedFactsBatches(t, 1, true)
+	hits := waitForFactSeqs(t, mock, stream, []int64{seq}, 45*time.Second)
+	var hit factsHit
+	for _, h := range hits {
+		sid, s := parseFactsMeta(h.Body)
+		if sid == stream && s == seq {
+			hit = h
+			break
+		}
+	}
 	if hit.Auth != "Bearer "+token {
 		t.Fatalf("Authorization = %q", hit.Auth)
 	}
@@ -389,17 +481,7 @@ func TestTC20_FactsRestartPreservesStream(t *testing.T) {
 	}
 	waitServiceState(t, "Running", 60*time.Second)
 	stream1, seq1, _ := seedFactsBatches(t, 1, true)
-	hits1 := waitForFacts(t, mock, 1, 45*time.Second)
-	var meta1 struct {
-		StreamID string `json:"stream_id"`
-		Seq      int64  `json:"seq"`
-	}
-	if err := json.Unmarshal([]byte(hits1[0].Body), &meta1); err != nil || meta1.StreamID == "" {
-		t.Fatalf("bad first batch: %v %s", err, hits1[0].Body)
-	}
-	if meta1.StreamID != stream1 || meta1.Seq != seq1 {
-		t.Fatalf("uploaded meta=%+v seed stream=%s seq=%d", meta1, stream1, seq1)
-	}
+	_ = waitForFactSeqs(t, mock, stream1, []int64{seq1}, 45*time.Second)
 
 	mustPowershell(t, fmt.Sprintf(`Restart-Service -Name '%s' -Force`, serviceName))
 	waitServiceState(t, "Running", 60*time.Second)
@@ -407,18 +489,10 @@ func TestTC20_FactsRestartPreservesStream(t *testing.T) {
 	if stream2 != stream1 {
 		t.Fatalf("stream_id changed across restart seed: %q → %q", stream1, stream2)
 	}
-	hits2 := waitForFacts(t, mock, len(hits1)+1, 45*time.Second)
-	var meta2 struct {
-		StreamID string `json:"stream_id"`
-		Seq      int64  `json:"seq"`
+	if seq2 <= seq1 {
+		t.Fatalf("seeded seq did not advance: %d → %d", seq1, seq2)
 	}
-	_ = json.Unmarshal([]byte(hits2[len(hits2)-1].Body), &meta2)
-	if meta2.StreamID != meta1.StreamID {
-		t.Fatalf("stream_id changed: %q → %q", meta1.StreamID, meta2.StreamID)
-	}
-	if meta2.Seq != seq2 || meta2.Seq <= meta1.Seq {
-		t.Fatalf("seq did not advance: %d → %d (seeded %d)", meta1.Seq, meta2.Seq, seq2)
-	}
+	_ = waitForFactSeqs(t, mock, stream2, []int64{seq2}, 45*time.Second)
 }
 
 func TestTC20_FactsOfflineThenDeliver(t *testing.T) {
@@ -434,28 +508,35 @@ func TestTC20_FactsOfflineThenDeliver(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitServiceState(t, "Running", 60*time.Second)
-	_, first, last := seedFactsBatches(t, 2, true)
+	stream, first, last := seedFactsBatches(t, 2, true)
 	if n := len(mock.Hits()); n != 0 {
 		t.Fatalf("expected no hits while offline, got %d", n)
 	}
 	mock.setOffline(false)
-	hits := waitForFacts(t, mock, 2, 60*time.Second)
+	// Sampler may have queued earlier seqs while offline; require the seeded
+	// range as an ordered subsequence (FIFO), not that hits[0] is the seed.
+	want := make([]int64, 0, last-first+1)
+	for s := first; s <= last; s++ {
+		want = append(want, s)
+	}
+	hits := waitForFactSeqs(t, mock, stream, want, 60*time.Second)
 	var prev int64
-	for i, h := range hits {
-		var meta struct {
-			Seq int64 `json:"seq"`
+	var sawSeed bool
+	for _, h := range hits {
+		sid, seq := parseFactsMeta(h.Body)
+		if sid != stream {
+			continue
 		}
-		_ = json.Unmarshal([]byte(h.Body), &meta)
-		if i == 0 && meta.Seq != first {
-			t.Fatalf("first delivered seq=%d want %d", meta.Seq, first)
+		if seq >= first && seq <= last {
+			if sawSeed && seq <= prev {
+				t.Fatalf("seeded seq order broken: %d then %d", prev, seq)
+			}
+			sawSeed = true
+			prev = seq
 		}
-		if i > 0 && meta.Seq <= prev {
-			t.Fatalf("seq order broken: %d then %d", prev, meta.Seq)
-		}
-		prev = meta.Seq
 	}
 	if prev != last {
-		t.Fatalf("last delivered seq=%d want %d", prev, last)
+		t.Fatalf("last seeded seq seen=%d want %d", prev, last)
 	}
 }
 
@@ -480,22 +561,22 @@ func TestTC20_FactsStopProcessSCMRecovery(t *testing.T) {
 	}
 	waitServiceState(t, "Running", 60*time.Second)
 	stream, first, last := seedFactsBatches(t, 3, true)
-	_ = waitForFacts(t, mock, 1, 45*time.Second)
+	want := make([]int64, 0, last-first+1)
+	for s := first; s <= last; s++ {
+		want = append(want, s)
+	}
+	_ = waitForFactSeqs(t, mock, stream, want[:1], 45*time.Second)
 
 	mustPowershell(t, `Get-Process -Name 'dad-joke' -ErrorAction Stop | Stop-Process -Force`)
 	waitServiceState(t, "Running", 90*time.Second) // SCM failure recovery restart
-	hits := waitForFacts(t, mock, 3, 60*time.Second)
+	hits := waitForFactSeqs(t, mock, stream, want, 60*time.Second)
 	seen := map[int64]bool{}
 	for _, h := range hits {
-		var m struct {
-			StreamID string `json:"stream_id"`
-			Seq      int64  `json:"seq"`
-		}
-		_ = json.Unmarshal([]byte(h.Body), &m)
-		if m.StreamID != stream {
+		sid, seq := parseFactsMeta(h.Body)
+		if sid != stream {
 			continue
 		}
-		seen[m.Seq] = true
+		seen[seq] = true
 	}
 	for s := first; s <= last; s++ {
 		if !seen[s] {
@@ -519,31 +600,27 @@ func TestTC20_FactsLostAckResendDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitServiceState(t, "Running", 60*time.Second)
+	// Arm drop only for the seeded upload: stop, clear prior sampler hits that
+	// would otherwise consume dropResponses, seed, then start.
+	stream, seq, _ := seedFactsBatches(t, 1, false)
+	mock.clearHits()
 	mock.setDropResponses(1)
-	stream, seq, _ := seedFactsBatches(t, 1, true)
+	startDadJokeService(t)
 
 	deadline := time.Now().Add(90 * time.Second)
-	var firstKey string
+	key := fmt.Sprintf("%s:%d", stream, seq)
 	for {
 		hits := mock.Hits()
-		if len(hits) >= 2 {
-			var m0, m1 struct {
-				StreamID string `json:"stream_id"`
-				Seq      int64  `json:"seq"`
-			}
-			_ = json.Unmarshal([]byte(hits[0].Body), &m0)
-			_ = json.Unmarshal([]byte(hits[1].Body), &m1)
-			if m0.StreamID == stream && m0.Seq == seq && m1.StreamID == stream && m1.Seq == seq {
-				firstKey = fmt.Sprintf("%s:%d", m0.StreamID, m0.Seq)
-				break
-			}
+		if countFactSeq(hits, stream, seq) >= 2 {
+			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for lost-ack resend; hits=%d", len(mock.Hits()))
+			t.Fatalf("timed out waiting for lost-ack resend of %s; hits=%d count=%d",
+				key, len(hits), countFactSeq(hits, stream, seq))
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if mock.uniqueAccepted(firstKey) != 1 {
-		t.Fatalf("unique accept count for %s = %d, want 1 (no double count)", firstKey, mock.uniqueAccepted(firstKey))
+	if mock.uniqueAccepted(key) != 1 {
+		t.Fatalf("unique accept count for %s = %d, want 1 (no double count)", key, mock.uniqueAccepted(key))
 	}
 }
