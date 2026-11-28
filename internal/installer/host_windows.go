@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/barzoj/dad-joke/internal/winscm"
+	"github.com/barzoj/dad-joke/internal/winsess"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -466,6 +467,10 @@ func (h *WindowsHost) ServiceExists(name string) (bool, error) {
 	}
 	s.Close()
 	return true, nil
+}
+
+func (h *WindowsHost) StopSessionAgents(binaryPath string) error {
+	return winsess.TerminateInstalledSessionAgents(binaryPath)
 }
 
 func (h *WindowsHost) WaitForState(name string, state ServiceState, timeout time.Duration) error {

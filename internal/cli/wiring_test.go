@@ -15,6 +15,7 @@ import (
 	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/sampler"
 	"github.com/barzoj/dad-joke/internal/service"
+	"github.com/barzoj/dad-joke/internal/sessionagent"
 )
 
 func TestInstallParsesSampleInterval(t *testing.T) {
@@ -34,23 +35,29 @@ func TestInstallParsesSampleInterval(t *testing.T) {
 	}
 }
 
-func TestDefaultAgentGroupHasSamplerAndUploader(t *testing.T) {
+func TestDefaultAgentGroupHasSamplerUploaderAndSessionSupervisor(t *testing.T) {
 	t.Parallel()
 	g := DefaultAgentGroup()
-	if len(g) < 5 {
-		t.Fatalf("DefaultAgentGroup len=%d, want ≥5 (updater,heartbeat,jobs,sampler,factsup)", len(g))
+	if len(g) < 6 {
+		t.Fatalf("DefaultAgentGroup len=%d, want ≥6 (updater,heartbeat,jobs,sampler,factsup,sessionagent)", len(g))
 	}
-	var sawSampler, sawUploader bool
+	var sawSampler, sawUploader, sawSession bool
 	for _, a := range g {
 		switch a.(type) {
 		case *sampler.Loop:
 			sawSampler = true
 		case *factsup.Loop:
 			sawUploader = true
+		case *sessionagent.Supervisor:
+			sawSession = true
 		}
 	}
-	if !sawSampler || !sawUploader {
-		t.Fatalf("sampler=%v uploader=%v", sawSampler, sawUploader)
+	if !sawSampler || !sawUploader || !sawSession {
+		t.Fatalf("sampler=%v uploader=%v session=%v", sawSampler, sawUploader, sawSession)
+	}
+	opts := DefaultServiceOptions()
+	if opts.Events == nil {
+		t.Fatal("DefaultServiceOptions.Events must be set")
 	}
 }
 
@@ -92,10 +99,13 @@ func TestGroupContainsSamplerAndUploader(t *testing.T) {
 	}
 }
 
-func TestUsageMentionsSampleInterval(t *testing.T) {
+func TestUsageMentionsSampleIntervalAndSession(t *testing.T) {
 	t.Parallel()
 	if !containsFlag(usageText, "--sample-interval") {
 		t.Fatal("usage missing --sample-interval")
+	}
+	if !containsFlag(usageText, "session") {
+		t.Fatal("usage missing session command")
 	}
 	_ = installer.InstallOptions{}
 	_ = io.Discard

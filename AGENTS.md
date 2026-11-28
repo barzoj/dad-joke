@@ -6,7 +6,8 @@ Guidance for coding and review agents working in this repository. Canonical arch
 
 1. **Privilege & runtime**
    - Target: Windows Home (compatible with Pro/Enterprise).
-   - Child = Standard User; agent = Windows Service under `LocalSystem`.
+   - Child = Standard User.
+   - Agent = **two processes, one binary**: Windows Service under `LocalSystem` (Session 0; network, secrets, queue, supervision) **and** a per-user session agent (`dad-joke.exe session`) in each interactive session (GUI access; no network, no secrets). The service launches/restarts/stops session agents; see `docs/ARCHITECTURE.md`.
    - Agent binaries and config: ACLs allow `SYSTEM` and `Administrators` only.
 
 2. **Two-layer separation**

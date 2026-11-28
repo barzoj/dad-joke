@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -17,11 +19,12 @@ func isWindowsServiceSession() bool {
 }
 
 type scmHandler struct {
-	agent Agent
+	agent  Agent
+	events chan<- Event
 }
 
 func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
-	const accepts = svc.AcceptStop | svc.AcceptShutdown
+	const accepts = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange | svc.AcceptPowerEvent
 
 	changes <- svc.Status{State: svc.StartPending}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,6 +62,10 @@ func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, chan
 				}
 				changes <- svc.Status{State: svc.Stopped}
 				return false, 0
+			case svc.SessionChange:
+				h.forwardSessionChange(req)
+			case svc.PowerEvent:
+				h.forwardPowerEvent(req)
 			default:
 				// Ignore unsupported controls.
 			}
@@ -66,8 +73,30 @@ func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, chan
 	}
 }
 
-func runWindowsService(name string, agent Agent) error {
-	if err := svc.Run(name, &scmHandler{agent: agent}); err != nil {
+func (h *scmHandler) forwardSessionChange(req svc.ChangeRequest) {
+	if req.EventData == 0 {
+		return
+	}
+	// SCM passes EventData as a pointer-sized integer. unsafe.Add is the
+	// supported single-expression conversion (go vet rejects unsafe.Pointer(uintptr)).
+	notif := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Add(unsafe.Pointer(nil), req.EventData))
+	ev, ok := TranslateSessionChange(req.EventType, notif.SessionID)
+	if !ok {
+		return
+	}
+	EmitEvent(h.events, ev)
+}
+
+func (h *scmHandler) forwardPowerEvent(req svc.ChangeRequest) {
+	ev, ok := TranslatePowerEvent(req.EventType)
+	if !ok {
+		return
+	}
+	EmitEvent(h.events, ev)
+}
+
+func runWindowsService(name string, agent Agent, events chan<- Event) error {
+	if err := svc.Run(name, &scmHandler{agent: agent, events: events}); err != nil {
 		return fmt.Errorf("service run: %w", err)
 	}
 	return nil

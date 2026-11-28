@@ -49,11 +49,16 @@ Only what exists on `main` today:
 
 ## Architecture at a glance
 
-Two HTTP surfaces share one process and one MongoDB-backed DAL: agents speak **AgentAPI** with `dj_agt_…` bearer tokens; parents and MCP clients speak **ControlAPI** / **MCP** with `dj_pat_…` or session credentials. The Windows agent never applies product logic itself beyond reconciling desired state and running claimed jobs.
+AgentAPI and ControlAPI share a single `cmd/server` binary and one MongoDB-backed DAL: agents speak **AgentAPI** with `dj_agt_…` bearer tokens; parents and MCP clients speak **ControlAPI** / **MCP** with `dj_pat_…` or session credentials. The Windows agent never applies product logic itself beyond reconciling desired state and running claimed jobs.
+
+On Windows the agent is **two processes, one binary**: a `LocalSystem` service in Session 0 (network, secrets, facts queue, job worker, **session supervision**) and a per-user `dad-joke.exe session` process in each interactive session (GUI access; no token, no network, no `config.json`). The service launches, restarts, and stops session agents.
 
 ```mermaid
 flowchart LR
-  Agent[Windows agent] -->|AgentAPI Bearer dj_agt_| Server[cmd/server]
+  Service[dad-joke service Session 0]
+  SessionAgent[dad-joke session user session]
+  Service -->|CreateProcessAsUser| SessionAgent
+  Service -->|AgentAPI Bearer dj_agt_| Server[cmd/server]
   Parent[Parent / MCP client] -->|ControlAPI or /mcp| Server
   Server --> DAL[internal/store]
   DAL --> Mongo[(MongoDB)]
@@ -308,6 +313,7 @@ The running service polls GitHub Releases (default `poll_interval_seconds=60`), 
 
 Running `install` again is idempotent:
 
+- Stops the `DadJoke` service and any remaining interactive session agents (`dad-joke.exe session`) before replacing the binary, then restarts the service.
 - `machine_id` is **never** replaced once present.
 - `token` is preserved unless you pass `--token` (then the new value is stored verbatim).
 - `--backend-url` / `--heartbeat-interval` alone update those fields only; they do **not** rotate the token.
@@ -318,7 +324,7 @@ Running `install` again is idempotent:
 & 'C:\Program Files\DadJoke\dad-joke.exe' uninstall
 ```
 
-Removes the `DadJoke` service, firewall rule, `C:\Program Files\DadJoke`, and `C:\ProgramData\DadJoke` (including `config.json`). Requires Administrator. Safe to run when nothing is installed.
+Stops the service and session agents, then removes the `DadJoke` service, firewall rule, `C:\Program Files\DadJoke`, and `C:\ProgramData\DadJoke` (including `config.json`). Requires Administrator. Safe to run when nothing is installed.
 
 ## Troubleshooting
 

@@ -71,6 +71,10 @@ type Host interface {
 	DeleteService(name string) error
 	ServiceExists(name string) (bool, error)
 	WaitForState(name string, state ServiceState, timeout time.Duration) error
+	// StopSessionAgents terminates interactive session-agent processes for
+	// binaryPath so install/uninstall can replace or delete the image.
+	// Call after WaitForState(Stopped); no-op when none are running.
+	StopSessionAgents(binaryPath string) error
 
 	EnsureFirewallRule(rule FirewallRuleSpec) error
 	RemoveFirewallRule(name string) error
