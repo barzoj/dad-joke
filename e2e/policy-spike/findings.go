@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"testing"
 )
 
 // Finding is one mechanism × variant row for docs/policy-spike-findings.md.
@@ -37,8 +36,7 @@ func recordFinding(f Finding) {
 	findings = append(findings, f)
 }
 
-func writeFindingsArtifacts(t testing.TB) {
-	t.Helper()
+func writeFindingsArtifacts() error {
 	findingsMu.Lock()
 	rows := append([]Finding(nil), findings...)
 	findingsMu.Unlock()
@@ -55,32 +53,34 @@ func writeFindingsArtifacts(t testing.TB) {
 		dir = "."
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir findings out: %v", err)
+		return fmt.Errorf("mkdir findings out: %w", err)
 	}
 
 	jsonPath := filepath.Join(dir, "policy-spike-findings.json")
 	b, err := json.MarshalIndent(rows, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal findings: %v", err)
+		return fmt.Errorf("marshal findings: %w", err)
 	}
 	if err := os.WriteFile(jsonPath, b, 0o644); err != nil {
-		t.Fatalf("write %s: %v", jsonPath, err)
+		return fmt.Errorf("write %s: %w", jsonPath, err)
 	}
 
 	mdPath := filepath.Join(dir, "policy-spike-findings.generated.md")
 	if err := os.WriteFile(mdPath, []byte(renderFindingsMarkdown(rows)), 0o644); err != nil {
-		t.Fatalf("write %s: %v", mdPath, err)
+		return fmt.Errorf("write %s: %w", mdPath, err)
 	}
-	t.Logf("FINDINGS_JSON=%s", jsonPath)
-	t.Logf("FINDINGS_MD=%s", mdPath)
+	fmt.Fprintf(os.Stderr, "FINDINGS_JSON=%s\n", jsonPath)
+	fmt.Fprintf(os.Stderr, "FINDINGS_MD=%s\n", mdPath)
 	for _, r := range rows {
-		t.Logf("FINDING|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+		fmt.Fprintf(os.Stderr, "FINDING|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
 			r.Mechanism, r.Variant, r.Works, r.Latency, r.NeedsRelogon, r.NeedsReboot,
 			r.VisibleGpresult, sanitizePipe(r.Gotchas), sanitizePipe(r.ClientSKUNote))
 	}
+	return nil
 }
 
 func sanitizePipe(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
 	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "/"), "\n", " ")
 }
 
@@ -106,6 +106,7 @@ func renderFindingsMarkdown(rows []Finding) string {
 }
 
 func escMD(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
 	s = strings.ReplaceAll(s, "|", "\\|")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return s
