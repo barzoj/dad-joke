@@ -47,3 +47,22 @@ func TestEnvBool(t *testing.T) {
 		t.Fatal("expected default true")
 	}
 }
+
+func TestFactsRetentionDaysFromEnv(t *testing.T) {
+	t.Setenv("DAD_JOKE_FACTS_RETENTION_DAYS", "")
+	n, err := factsRetentionDaysFromEnv()
+	if err != nil || n != 30 {
+		t.Fatalf("default n=%d err=%v", n, err)
+	}
+	t.Setenv("DAD_JOKE_FACTS_RETENTION_DAYS", "7")
+	n, err = factsRetentionDaysFromEnv()
+	if err != nil || n != 7 {
+		t.Fatalf("7 n=%d err=%v", n, err)
+	}
+	for _, bad := range []string{"0", "366", "abc", "-1"} {
+		t.Setenv("DAD_JOKE_FACTS_RETENTION_DAYS", bad)
+		if _, err := factsRetentionDaysFromEnv(); err == nil {
+			t.Fatalf("want error for %q", bad)
+		}
+	}
+}

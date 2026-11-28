@@ -112,12 +112,20 @@ const (
 
 // Fact ingest hard limits (mirrored in api/common/facts.tsp).
 const (
-	FactBatchMaxCount  = 500
-	FactBatchMaxBytes  = 256 * 1024
-	FactDurMaxSeconds  = 300
-	FactTitleMaxLen    = 256 // characters/runes, not bytes
-	FactTTLSeconds     = 30 * 24 * 60 * 60 // 30 days
+	FactBatchMaxCount         = 500
+	FactBatchMaxBytes         = 256 * 1024
+	FactDurMaxSeconds         = 300
+	FactTitleMaxLen           = 256 // characters/runes, not bytes
+	FactRetentionDaysDefault  = 30
+	FactRetentionDaysMin      = 1
+	FactRetentionDaysMax      = 365
+	FactTTLSeconds            = FactRetentionDaysDefault * 24 * 60 * 60 // default 30 days
 )
+
+// FactTTLSecondsFor returns expireAfterSeconds for the given retention days.
+func FactTTLSecondsFor(days int) int32 {
+	return int32(days * 24 * 60 * 60)
+}
 
 // EventQuery filters control-plane event reads.
 // Results are ordered by ts ascending, then event_id ascending (tie-breaker).
@@ -149,6 +157,27 @@ type EventStore interface {
 	List(ctx context.Context, q EventQuery) (EventPage, error)
 }
 
+// FactStore persists append-only agent facts. Insert only — no update/delete.
+//
+// InsertBatch semantics:
+//   - Callers must validate the batch before calling.
+//   - Unique (tenant_id, machine_id, stream_id, seq, idx); duplicate-key
+//     errors are swallowed per document (like EventStore).
+//   - Returns the number of newly inserted rows.
+type FactStore interface {
+	InsertBatch(ctx context.Context, facts []Fact) (inserted int, err error)
+}
+
+// UsageStore maintains per-machine local-day × bucket aggregates.
+//
+// Apply uses a per-stream high-water mark so replays and out-of-order seq
+// values never double-count. Returns the number of documents whose seconds
+// were incremented (0 when every delta was already applied or empty).
+type UsageStore interface {
+	Apply(ctx context.Context, tenantID, machineID, streamID string, seq int64, deltas []UsageDelta) (updated int, err error)
+	ListByMachine(ctx context.Context, tenantID, machineID, date string) ([]UsageDaily, error)
+}
+
 // AuditStore appends sensitive-action audit records.
 type AuditStore interface {
 	Append(ctx context.Context, e *AuditEntry) error
@@ -169,5 +198,7 @@ type Store interface {
 	Policies() PolicyStore
 	Jobs() JobStore
 	Events() EventStore
+	Facts() FactStore
+	Usage() UsageStore
 	Audits() AuditStore
 }

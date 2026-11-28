@@ -138,6 +138,42 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 			},
 		},
 		{
+			coll: collFacts,
+			models: []mongo.IndexModel{
+				{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "machine_id", Value: 1},
+						{Key: "stream_id", Value: 1},
+						{Key: "seq", Value: 1},
+						{Key: "idx", Value: 1},
+					},
+					Options: options.Index().SetUnique(true).SetName("uniq_fact_idempotency"),
+				},
+				{
+					Keys: bson.D{
+						{Key: "tenant_id", Value: 1},
+						{Key: "machine_id", Value: 1},
+						{Key: "ts_server", Value: 1},
+					},
+					Options: options.Index().SetName("idx_facts_tenant_machine_ts_server"),
+				},
+				// TTL index is created/reconciled separately (CreateMany cannot
+				// change expireAfterSeconds on an existing index).
+			},
+		},
+		{
+			coll: collUsageDaily,
+			models: []mongo.IndexModel{{
+				Keys: bson.D{
+					{Key: "tenant_id", Value: 1},
+					{Key: "machine_id", Value: 1},
+					{Key: "date", Value: 1},
+				},
+				Options: options.Index().SetName("idx_usage_tenant_machine_date"),
+			}},
+		},
+		{
 			coll: collAuditLogs,
 			models: []mongo.IndexModel{{
 				Keys: bson.D{
@@ -153,6 +189,9 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		if _, err := s.coll(spec.coll).Indexes().CreateMany(ctx, spec.models); err != nil {
 			return fmt.Errorf("mongo: EnsureIndexes %s: %w", spec.coll, err)
 		}
+	}
+	if err := s.ensureFactsTTL(ctx, store.FactTTLSecondsFor(s.FactsRetentionDays())); err != nil {
+		return err
 	}
 	return nil
 }

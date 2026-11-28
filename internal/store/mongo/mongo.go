@@ -27,19 +27,23 @@ const (
 	collPolicies       = "policies"
 	collJobs           = "jobs"
 	collEvents         = "events"
+	collFacts          = "facts"
+	collUsageDaily     = "usage_daily"
 	collAuditLogs      = "audit_logs"
 )
 
 // Config configures a MongoDB-backed Store.
 type Config struct {
-	URI      string
-	Database string
+	URI                string
+	Database           string
+	FactsRetentionDays int // 1..365; 0 → store.FactRetentionDaysDefault
 }
 
 // Store is a MongoDB-backed store.Store.
 type Store struct {
-	client *mongo.Client
-	db     *mongo.Database
+	client             *mongo.Client
+	db                 *mongo.Database
+	factsRetentionDays int
 }
 
 // Open connects to MongoDB. Call EnsureIndexes after Open before serving traffic.
@@ -50,6 +54,13 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	dbName := cfg.Database
 	if dbName == "" {
 		dbName = defaultDB
+	}
+	retention := cfg.FactsRetentionDays
+	if retention == 0 {
+		retention = store.FactRetentionDaysDefault
+	}
+	if retention < store.FactRetentionDaysMin || retention > store.FactRetentionDaysMax {
+		return nil, fmt.Errorf("mongo: FactsRetentionDays must be %d..%d", store.FactRetentionDaysMin, store.FactRetentionDaysMax)
 	}
 	client, err := mongo.Connect(options.Client().ApplyURI(cfg.URI))
 	if err != nil {
@@ -63,7 +74,19 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		_ = client.Disconnect(context.Background())
 		return nil, fmt.Errorf("mongo: ping: %w", err)
 	}
-	return &Store{client: client, db: client.Database(dbName)}, nil
+	return &Store{
+		client:             client,
+		db:                 client.Database(dbName),
+		factsRetentionDays: retention,
+	}, nil
+}
+
+// FactsRetentionDays returns the configured facts TTL retention in days.
+func (s *Store) FactsRetentionDays() int {
+	if s == nil || s.factsRetentionDays == 0 {
+		return store.FactRetentionDaysDefault
+	}
+	return s.factsRetentionDays
 }
 
 // pingContext returns ctx unchanged when it already has a deadline; otherwise
@@ -99,6 +122,8 @@ func (s *Store) Machines() store.MachineStore { return machineStore{s} }
 func (s *Store) Policies() store.PolicyStore  { return policyStore{s} }
 func (s *Store) Jobs() store.JobStore         { return jobStore{s} }
 func (s *Store) Events() store.EventStore     { return eventStore{s} }
+func (s *Store) Facts() store.FactStore       { return factStore{s} }
+func (s *Store) Usage() store.UsageStore      { return usageStore{s} }
 func (s *Store) Audits() store.AuditStore     { return auditStore{s} }
 
 func (s *Store) coll(name string) *mongo.Collection {

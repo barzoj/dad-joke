@@ -75,6 +75,44 @@ type Machine struct {
 	LastSeenAt           time.Time
 	AppliedPolicyVersion int32
 	DesiredPolicyVersion int32
+	TimeZone             string // IANA zone from latest heartbeat (may be empty)
+}
+
+// Fact is one append-only agent fact row (never updated/deleted by app code).
+type Fact struct {
+	ID         string // server-assigned UUID
+	TenantID   string
+	MachineID  string
+	StreamID   string
+	Seq        int64
+	Idx        int32 // index within the batch (0..n-1)
+	TS         time.Time
+	TSServer   time.Time
+	Kind       string
+	Plugin     string
+	UserSID    string
+	DurS       int32
+	Data       json.RawMessage
+	TimeZone   string
+	SentAt     time.Time
+}
+
+// UsageDelta is one guarded increment applied to usage_daily.
+type UsageDelta struct {
+	Date     string // YYYY-MM-DD in the batch's time zone
+	TimeZone string
+	Bucket   string // "app:<exe>" or "fg:<exe>"
+	Seconds  int64
+}
+
+// UsageDaily is one per-(day,bucket) aggregate row.
+type UsageDaily struct {
+	TenantID  string
+	MachineID string
+	Date      string
+	TimeZone  string
+	Bucket    string
+	Seconds   int64
 }
 
 // Policy is the versioned desired-state document for one machine.

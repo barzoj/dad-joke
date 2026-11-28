@@ -164,6 +164,7 @@ type machineDoc struct {
 	LastSeenAt           time.Time `bson:"last_seen_at"`
 	AppliedPolicyVersion int32     `bson:"applied_policy_version"`
 	DesiredPolicyVersion int32     `bson:"desired_policy_version"`
+	TimeZone             string    `bson:"time_zone,omitempty"`
 }
 
 func machineKey(tenantID, machineID string) string {
@@ -177,6 +178,7 @@ func machineToDoc(m *store.Machine) machineDoc {
 		LastSeenAt:           m.LastSeenAt.UTC(),
 		AppliedPolicyVersion: m.AppliedPolicyVersion,
 		DesiredPolicyVersion: m.DesiredPolicyVersion,
+		TimeZone:             m.TimeZone,
 	}
 }
 
@@ -187,6 +189,57 @@ func machineFromDoc(d machineDoc) *store.Machine {
 		LastSeenAt:           d.LastSeenAt.UTC(),
 		AppliedPolicyVersion: d.AppliedPolicyVersion,
 		DesiredPolicyVersion: d.DesiredPolicyVersion,
+		TimeZone:             d.TimeZone,
+	}
+}
+
+type factDoc struct {
+	ID         string          `bson:"_id"`
+	TenantID   string          `bson:"tenant_id"`
+	MachineID  string          `bson:"machine_id"`
+	StreamID   string          `bson:"stream_id"`
+	Seq        int64           `bson:"seq"`
+	Idx        int32           `bson:"idx"`
+	TS         time.Time       `bson:"ts"`
+	TSServer   time.Time       `bson:"ts_server"`
+	Kind       string          `bson:"kind"`
+	Plugin     string          `bson:"plugin"`
+	UserSID    string          `bson:"user_sid,omitempty"`
+	DurS       int32           `bson:"dur_s"`
+	Data       json.RawMessage `bson:"data,omitempty"`
+	TimeZone   string          `bson:"time_zone"`
+	SentAt     time.Time       `bson:"sent_at"`
+}
+
+func factToDoc(f *store.Fact) factDoc {
+	data := json.RawMessage(nil)
+	if f.Data != nil {
+		data = append(json.RawMessage(nil), f.Data...)
+	}
+	return factDoc{
+		ID: f.ID, TenantID: f.TenantID, MachineID: f.MachineID,
+		StreamID: f.StreamID, Seq: f.Seq, Idx: f.Idx,
+		TS: f.TS.UTC(), TSServer: f.TSServer.UTC(),
+		Kind: f.Kind, Plugin: f.Plugin, UserSID: f.UserSID,
+		DurS: f.DurS, Data: data, TimeZone: f.TimeZone, SentAt: f.SentAt.UTC(),
+	}
+}
+
+type usageDailyDoc struct {
+	ID        string           `bson:"_id"`
+	TenantID  string           `bson:"tenant_id"`
+	MachineID string           `bson:"machine_id"`
+	Date      string           `bson:"date"`
+	TimeZone  string           `bson:"time_zone"`
+	Bucket    string           `bson:"bucket"`
+	Seconds   int64            `bson:"seconds"`
+	HW        map[string]int64 `bson:"hw,omitempty"`
+}
+
+func usageFromDoc(d usageDailyDoc) store.UsageDaily {
+	return store.UsageDaily{
+		TenantID: d.TenantID, MachineID: d.MachineID,
+		Date: d.Date, TimeZone: d.TimeZone, Bucket: d.Bucket, Seconds: d.Seconds,
 	}
 }
 

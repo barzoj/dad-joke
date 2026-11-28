@@ -210,7 +210,7 @@ func heartbeat(t *testing.T, base, agentTok, machineID string) int {
 	return res.StatusCode
 }
 
-func TestMCP_ToolsListExactlySeven(t *testing.T) {
+func TestMCP_ToolsListExactlyEight(t *testing.T) {
 	t.Parallel()
 	st := memory.New()
 	_, pat := seedPAT(t, st, "mcp-tools-"+uuid.NewString()[:8])

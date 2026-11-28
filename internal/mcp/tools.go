@@ -13,7 +13,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
-// ToolNames returns the exact seven tool names exposed by this server.
+// ToolNames returns the exact eight tool names exposed by this server.
 func ToolNames() []string {
 	return []string{
 		"list_machines",
@@ -22,6 +22,7 @@ func ToolNames() []string {
 		"run_script",
 		"get_job",
 		"list_events",
+		"get_usage",
 		"manage_agent_tokens",
 	}
 }
@@ -56,6 +57,11 @@ func (s *Server) registerTools(srv *mcpsdk.Server) {
 		Name:        "list_events",
 		Description: "List telemetry events for a machine",
 	}, s.listEvents)
+
+	mcpsdk.AddTool(srv, &mcpsdk.Tool{
+		Name:        "get_usage",
+		Description: "Get per-app usage for a machine-local calendar day (date YYYY-MM-DD)",
+	}, s.getUsage)
 
 	mcpsdk.AddTool(srv, &mcpsdk.Tool{
 		Name:        "manage_agent_tokens",
@@ -95,6 +101,11 @@ type listEventsArgs struct {
 	To        string `json:"to,omitempty" jsonschema:"Exclusive upper bound RFC 3339"`
 	Limit     *int32 `json:"limit,omitempty" jsonschema:"Page size 1..100 (default 50)"`
 	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque cursor from a previous next_cursor"`
+}
+
+type getUsageArgs struct {
+	MachineID string `json:"machine_id" jsonschema:"Machine id (UUIDv4)"`
+	Date      string `json:"date" jsonschema:"Calendar day YYYY-MM-DD (machine-local)"`
 }
 
 type manageAgentTokensArgs struct {
@@ -285,6 +296,40 @@ func (s *Server) listEvents(ctx context.Context, req *mcpsdk.CallToolRequest, in
 		page.Events = []controlapi.MachineEvent{}
 	}
 	return jsonToolResult(page)
+}
+
+func (s *Server) getUsage(ctx context.Context, req *mcpsdk.CallToolRequest, in getUsageArgs) (*mcpsdk.CallToolResult, any, error) {
+	editors, secret, err := s.toolEditors(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	id, err := parseUUID("machine_id", in.MachineID)
+	if err != nil {
+		return nil, nil, err
+	}
+	dateStr := strings.TrimSpace(in.Date)
+	if dateStr == "" {
+		return nil, nil, validationError("date is required")
+	}
+	parsed, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return nil, nil, validationError("date must be YYYY-MM-DD")
+	}
+	params := &controlapi.GetMachineUsageParams{
+		Date: openapi_types.Date{Time: parsed.UTC()},
+	}
+	resp, err := s.client.GetMachineUsageWithResponse(ctx, id, params, editors...)
+	if err != nil {
+		return nil, nil, mapClientErr(err, secret)
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, nil, mapResponseStatus(resp.StatusCode(), resp.Body, resp.HTTPResponse, secret)
+	}
+	body := *resp.JSON200
+	if body.Apps == nil {
+		body.Apps = []controlapi.AppUsage{}
+	}
+	return jsonToolResult(body)
 }
 
 func (s *Server) manageAgentTokens(ctx context.Context, req *mcpsdk.CallToolRequest, in manageAgentTokensArgs) (*mcpsdk.CallToolResult, any, error) {

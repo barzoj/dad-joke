@@ -33,18 +33,16 @@ func (a *AgentAPI) PostEvents(ctx context.Context, req agentapi.PostEventsReques
 		}, nil
 	}
 	machineID := req.Body.MachineId.String()
-	if err := config.ValidateMachineID(machineID); err != nil {
+	if err := validateBatchMachineID(machineID); err != nil {
 		return agentapi.PostEvents400JSONResponse{
-			Code: "bad_request", Message: "machine_id must be a UUIDv4", RequestId: uuid.NewString(),
+			Code: "bad_request", Message: err.Error(), RequestId: uuid.NewString(),
 		}, nil
 	}
 
 	items := req.Body.Events
-	if len(items) > store.EventBatchMaxCount {
+	if err := validateEventBatchCount(len(items), store.EventBatchMaxCount); err != nil {
 		return agentapi.PostEvents400JSONResponse{
-			Code:      "bad_request",
-			Message:   fmt.Sprintf("batch exceeds max of %d events", store.EventBatchMaxCount),
-			RequestId: uuid.NewString(),
+			Code: "bad_request", Message: err.Error(), RequestId: uuid.NewString(),
 		}, nil
 	}
 

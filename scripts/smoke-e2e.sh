@@ -97,6 +97,38 @@ if [[ "${HB_CODE}" != "200" ]]; then
   exit 1
 fi
 
+STREAM_ID="$(python3 -c 'import uuid; print(str(uuid.uuid4()))')"
+SENT_AT="$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+DAY="$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime("%Y-%m-%d"))')"
+echo "==> POST /v1/facts"
+FACTS_CODE=$(curl -sS -o /tmp/dj-smoke-facts.json -w '%{http_code}' -X POST "${BASE_URL}/v1/facts" \
+  -H "Authorization: Bearer ${AGT}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"machine_id\":\"${MACHINE_ID}\",\"stream_id\":\"${STREAM_ID}\",\"seq\":1,\"sent_at\":\"${SENT_AT}\",\"time_zone\":\"UTC\",\"utc_offset_minutes\":0,\"facts\":[{\"ts\":\"${SENT_AT}\",\"kind\":\"proc.sample\",\"plugin\":\"smoke\",\"dur_s\":30,\"data\":{\"exes\":[\"notepad.exe\"]}},{\"ts\":\"${SENT_AT}\",\"kind\":\"fg.sample\",\"plugin\":\"smoke\",\"dur_s\":30,\"data\":{\"exe\":\"notepad.exe\",\"pid\":1,\"title\":\"n\",\"idle_s\":0}}]}")
+if [[ "${FACTS_CODE}" != "200" ]]; then
+  echo "facts failed: ${FACTS_CODE}" >&2
+  cat /tmp/dj-smoke-facts.json >&2 || true
+  exit 1
+fi
+echo "==> GET usage"
+USAGE_CODE=$(curl -sS -o /tmp/dj-smoke-usage.json -w '%{http_code}' \
+  "${BASE_URL}/v1/machines/${MACHINE_ID}/usage?date=${DAY}" \
+  -H "Authorization: Bearer ${PAT}")
+if [[ "${USAGE_CODE}" != "200" ]]; then
+  echo "usage failed: ${USAGE_CODE}" >&2
+  cat /tmp/dj-smoke-usage.json >&2 || true
+  exit 1
+fi
+python3 -c 'import json,sys
+d=json.load(open("/tmp/dj-smoke-usage.json"))
+apps=d.get("apps") or []
+if not apps or apps[0].get("exe")!="notepad.exe":
+  raise SystemExit(f"unexpected usage: {d}")
+if int(apps[0].get("seconds") or 0)!=30 or int(apps[0].get("fg_seconds") or 0)!=30:
+  raise SystemExit(f"unexpected seconds: {d}")
+print("usage ok")
+'
+
 echo "==> MCP tools/list"
 MCP_LIST=$(curl -sS -X POST "${BASE_URL}/mcp" \
   -H "Authorization: Bearer ${PAT}" \
@@ -109,10 +141,12 @@ d=json.loads(raw)
 # Streamable JSON may wrap result under "result"
 tools=(d.get("result") or d).get("tools") or []
 names={t.get("name") for t in tools}
-need={"list_machines","get_machine","set_policy","run_script","get_job","list_events","manage_agent_tokens"}
+need={"list_machines","get_machine","set_policy","run_script","get_job","list_events","get_usage","manage_agent_tokens"}
 missing=need-names
 if missing:
   raise SystemExit(f"missing tools: {missing}")
+if len(names) != len(need):
+  raise SystemExit(f"tool count={len(names)} want {len(need)}")
 print("tools ok:", ",".join(sorted(names)))
 ' "${MCP_LIST}"
 

@@ -10,14 +10,16 @@ import (
 	"github.com/barzoj/dad-joke/internal/authctx"
 	"github.com/barzoj/dad-joke/internal/config"
 	"github.com/barzoj/dad-joke/internal/store"
+	"github.com/barzoj/dad-joke/internal/usage"
 	"github.com/google/uuid"
 )
 
 // AgentAPI implements agentapi.StrictServerInterface.
 type AgentAPI struct {
-	Store store.Store
-	Audit audit.Logger
-	Clock func() time.Time
+	Store              store.Store
+	Audit              audit.Logger
+	Clock              func() time.Time
+	FactsRetentionDays int // 1..365; 0 → store.FactRetentionDaysDefault
 }
 
 func (a *AgentAPI) now() time.Time {
@@ -25,6 +27,13 @@ func (a *AgentAPI) now() time.Time {
 		return a.Clock().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (a *AgentAPI) factsRetentionDays() int {
+	if a != nil && a.FactsRetentionDays >= store.FactRetentionDaysMin && a.FactsRetentionDays <= store.FactRetentionDaysMax {
+		return a.FactsRetentionDays
+	}
+	return store.FactRetentionDaysDefault
 }
 
 func (a *AgentAPI) GetHealthz(context.Context, agentapi.GetHealthzRequestObject) (agentapi.GetHealthzResponseObject, error) {
@@ -63,6 +72,13 @@ func (a *AgentAPI) PostHeartbeat(ctx context.Context, req agentapi.PostHeartbeat
 			RequestId: uuid.NewString(),
 		}, nil
 	}
+	if err := usage.LoadZone(body.TimeZone); err != nil {
+		return agentapi.PostHeartbeat400JSONResponse{
+			Code:      "bad_request",
+			Message:   err.Error(),
+			RequestId: uuid.NewString(),
+		}, nil
+	}
 	now := a.now()
 
 	desired := int32(0)
@@ -86,6 +102,7 @@ func (a *AgentAPI) PostHeartbeat(ctx context.Context, req agentapi.PostHeartbeat
 		LastSeenAt:           now,
 		AppliedPolicyVersion: body.AppliedPolicyVersion,
 		DesiredPolicyVersion: desired,
+		TimeZone:             body.TimeZone,
 	}
 	if err := a.Store.Machines().Upsert(ctx, mach); err != nil {
 		return agentapi.PostHeartbeat500JSONResponse{
