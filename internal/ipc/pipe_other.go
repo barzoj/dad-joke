@@ -8,15 +8,13 @@ import (
 	"io"
 )
 
-// DefaultListen is the non-Windows listener (must use MemHub in tests).
-var DefaultListen ListenFunc = listenUnsupported
+func init() {
+	DefaultDial = dialUnsupported
+	DefaultListen = listenUnsupported
+}
 
 func listenUnsupported(context.Context, uint32, string) (Acceptor, error) {
 	return nil, fmt.Errorf("ipc: named pipes are only supported on Windows")
-}
-
-func init() {
-	DefaultDial = dialUnsupported
 }
 
 // OpenPipeFile is a stub for ACL tests on non-Windows.

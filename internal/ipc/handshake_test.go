@@ -16,10 +16,14 @@ func pair() (server, client net.Conn) {
 	return a, b
 }
 
+func closeQuiet(c io.Closer) {
+	_ = c.Close()
+}
+
 func TestHandshakeSuccess(t *testing.T) {
 	srv, cli := pair()
-	defer srv.Close()
-	defer cli.Close()
+	defer closeQuiet(srv)
+	defer closeQuiet(cli)
 
 	stats := &Stats{}
 	var wg sync.WaitGroup
@@ -48,7 +52,7 @@ func TestHandshakeSuccess(t *testing.T) {
 	if ack.Type != TypeHelloAck || ack.Protocol != ProtocolVersion || ack.IntervalSeconds != 30 {
 		t.Fatalf("%+v", ack)
 	}
-	_ = cli.Close()
+	closeQuiet(cli)
 	wg.Wait()
 	if stats.HandshakeOK.Load() != 1 {
 		t.Fatalf("handshake_ok=%d", stats.HandshakeOK.Load())
@@ -68,7 +72,9 @@ func TestHandshakeVersionMismatch(t *testing.T) {
 			})
 		}()
 		cc := NewConn(cli)
-		_ = cc.WriteMessage(NewHello(ver, "dev", 1, 1))
+		if err := cc.WriteMessage(NewHello(ver, "dev", 1, 1)); err != nil {
+			t.Fatalf("ver=%d write: %v", ver, err)
+		}
 		rej, err := cc.ReadMessage()
 		if err != nil {
 			t.Fatalf("ver=%d read: %v", ver, err)
@@ -76,18 +82,18 @@ func TestHandshakeVersionMismatch(t *testing.T) {
 		if rej.Type != TypeReject || rej.Code != RejectVersionMismatch {
 			t.Fatalf("ver=%d %+v", ver, rej)
 		}
-		_ = cli.Close()
+		closeQuiet(cli)
 		<-done
 		if stats.VersionMismatch.Load() == 0 {
 			t.Fatalf("ver=%d no mismatch counter", ver)
 		}
-		_ = srv.Close()
+		closeQuiet(srv)
 	}
 }
 
 func TestHandshakeHelloTimeout(t *testing.T) {
 	srv, cli := pair()
-	defer cli.Close()
+	defer closeQuiet(cli)
 	stats := &Stats{}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -100,21 +106,33 @@ func TestHandshakeHelloTimeout(t *testing.T) {
 		t.Fatal("expected timeout")
 	}
 	if stats.HelloTimeout.Load() == 0 && stats.BadFrame.Load() == 0 {
-		// either timeout or close-induced bad frame is acceptable
 		t.Fatalf("expected hello timeout or bad frame counter")
 	}
+	closeQuiet(srv)
 }
 
 func TestDuplicateHello(t *testing.T) {
 	srv, cli := pair()
-	defer cli.Close()
+	defer closeQuiet(cli)
 	stats := &Stats{}
 	done := make(chan error, 1)
-	go func() { done <- ServeConn(context.Background(), srv, ServerConfig{SessionID: 1, Expected: ExpectedClient{PID: 1, SessionID: 1}, Stats: stats}) }()
+	go func() {
+		done <- ServeConn(context.Background(), srv, ServerConfig{
+			SessionID: 1,
+			Expected:  ExpectedClient{PID: 1, SessionID: 1},
+			Stats:     stats,
+		})
+	}()
 	cc := NewConn(cli)
-	_ = cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1))
-	_, _ = cc.ReadMessage()
-	_ = cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1))
+	if err := cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
 	rej, err := cc.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
@@ -126,25 +144,32 @@ func TestDuplicateHello(t *testing.T) {
 	if stats.DuplicateHello.Load() != 1 {
 		t.Fatalf("dup=%d", stats.DuplicateHello.Load())
 	}
+	closeQuiet(srv)
 }
 
 func TestMessageBeforeHello(t *testing.T) {
 	srv, cli := pair()
-	defer cli.Close()
+	defer closeQuiet(cli)
 	done := make(chan error, 1)
 	go func() { done <- ServeConn(context.Background(), srv, ServerConfig{SessionID: 1}) }()
 	cc := NewConn(cli)
-	_ = cc.WriteMessage(NewPing())
-	rej, _ := cc.ReadMessage()
+	if err := cc.WriteMessage(NewPing()); err != nil {
+		t.Fatal(err)
+	}
+	rej, err := cc.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rej.Type != TypeReject {
 		t.Fatalf("%+v", rej)
 	}
 	<-done
+	closeQuiet(srv)
 }
 
 func TestUnknownTypeIgnored(t *testing.T) {
 	srv, cli := pair()
-	defer cli.Close()
+	defer closeQuiet(cli)
 	stats := &Stats{}
 	var got atomic.Int32
 	done := make(chan error, 1)
@@ -160,12 +185,20 @@ func TestUnknownTypeIgnored(t *testing.T) {
 		})
 	}()
 	cc := NewConn(cli)
-	_ = cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1))
-	_, _ = cc.ReadMessage()
-	_ = cc.WriteMessage(Message{Type: "not_a_real_type"})
-	_ = cc.WriteMessage(NewMsg("fg.sample", []byte(`{}`)))
+	if err := cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.WriteMessage(Message{Type: "not_a_real_type"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.WriteMessage(NewMsg("fg.sample", []byte(`{}`))); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(50 * time.Millisecond)
-	_ = cli.Close()
+	closeQuiet(cli)
 	<-done
 	if stats.UnknownType.Load() != 1 {
 		t.Fatalf("unknown=%d", stats.UnknownType.Load())
@@ -173,6 +206,7 @@ func TestUnknownTypeIgnored(t *testing.T) {
 	if got.Load() != 1 {
 		t.Fatalf("handler calls=%d", got.Load())
 	}
+	closeQuiet(srv)
 }
 
 // HandlerFunc adapts a function to Handler.
@@ -184,21 +218,31 @@ func (f HandlerFunc) OnMessage(ctx context.Context, sid uint32, m Message) error
 
 func TestPingPong(t *testing.T) {
 	srv, cli := pair()
-	defer cli.Close()
+	defer closeQuiet(cli)
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeConn(context.Background(), srv, ServerConfig{SessionID: 1, Expected: ExpectedClient{PID: 1, SessionID: 1}})
+		done <- ServeConn(context.Background(), srv, ServerConfig{
+			SessionID: 1,
+			Expected:  ExpectedClient{PID: 1, SessionID: 1},
+		})
 	}()
 	cc := NewConn(cli)
-	_ = cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1))
-	_, _ = cc.ReadMessage()
-	_ = cc.WriteMessage(NewPing())
+	if err := cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.WriteMessage(NewPing()); err != nil {
+		t.Fatal(err)
+	}
 	pong, err := cc.ReadMessage()
 	if err != nil || pong.Type != TypePong {
 		t.Fatalf("%+v %v", pong, err)
 	}
-	_ = cli.Close()
+	closeQuiet(cli)
 	<-done
+	closeQuiet(srv)
 }
 
 func TestOversizeCloses(t *testing.T) {
@@ -206,17 +250,27 @@ func TestOversizeCloses(t *testing.T) {
 	stats := &Stats{}
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeConn(context.Background(), srv, ServerConfig{SessionID: 1, Expected: ExpectedClient{PID: 1, SessionID: 1}, Stats: stats})
+		done <- ServeConn(context.Background(), srv, ServerConfig{
+			SessionID: 1,
+			Expected:  ExpectedClient{PID: 1, SessionID: 1},
+			Stats:     stats,
+		})
 	}()
 	cc := NewConn(cli)
-	_ = cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1))
-	_, _ = cc.ReadMessage()
+	if err := cc.WriteMessage(NewHello(ProtocolVersion, "dev", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
 	var hdr [4]byte
 	hdr[0] = 0x00
 	hdr[1] = 0x01
 	hdr[2] = 0x00
 	hdr[3] = 0x01 // 65537
-	_, _ = cli.Write(hdr[:])
+	if _, err := cli.Write(hdr[:]); err != nil {
+		t.Fatal(err)
+	}
 	err := <-done
 	if !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("err=%v", err)
@@ -224,6 +278,8 @@ func TestOversizeCloses(t *testing.T) {
 	if stats.Oversize.Load() != 1 {
 		t.Fatalf("oversize=%d", stats.Oversize.Load())
 	}
+	closeQuiet(cli)
+	closeQuiet(srv)
 }
 
 func TestClientReconnectAfterDrop(t *testing.T) {
@@ -297,6 +353,8 @@ func TestSpoofedPIDRefused(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// PID/session check runs before any frame is read; the stream may already
+	// be closed by the time we try to write.
 	cc := NewConn(stream)
 	_ = cc.WriteMessage(NewHello(ProtocolVersion, "evil", 9, 999))
 	deadline = time.Now().Add(2 * time.Second)
@@ -309,7 +367,44 @@ func TestSpoofedPIDRefused(t *testing.T) {
 	if srv.Connected() {
 		t.Fatal("spoofed client marked connected")
 	}
-	_ = stream.Close()
+	closeQuiet(stream)
+}
+
+func TestSquatterListenRejected(t *testing.T) {
+	hub := NewMemHub()
+	ctx := context.Background()
+	stats := &Stats{}
+
+	first, err := hub.Listen(ctx, 11, "S-1-5-21-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeQuiet(first)
+
+	srv := &SessionServer{
+		SessionID:   11,
+		UserSID:     "S-1-5-21-11",
+		ExpectedPID: 55,
+		Listen:      hub.Listen,
+		Stats:       stats,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run(runCtx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for stats.Squatter.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("expected squatter counter while first listen is held")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if srv.Connected() {
+		t.Fatal("Connected() true while pipe name is squatted")
+	}
+	cancel()
+	<-errCh
 }
 
 func TestVerifyClient(t *testing.T) {

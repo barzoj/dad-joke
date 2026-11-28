@@ -4,20 +4,25 @@ package sessionagent
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/barzoj/dad-joke/internal/installer"
 	"github.com/barzoj/dad-joke/internal/ipc"
 )
 
-// e2ediag build tag enables test-only hooks:
-//   - DAD_JOKE_IPC_PROTOCOL / ipc-control.json force_protocol for version mismatch
-//   - %TEMP%\dadjoke-ipc-cmd\oversize triggers an oversized frame after hello
-//   - Supervisor writes ProgramData\DadJoke\ipc-status.json (see diag_status.go)
+// e2ediag build tag enables test-only hooks under %TEMP%\dadjoke-ipc-cmd\
+// (user-writable; no ProgramData / admin required for the session agent):
+//   - force_protocol  — integer protocol advertised in hello
+//   - oversize        — send an oversized frame header after hello
+// Supervisor still writes ProgramData\DadJoke\ipc-status.json / ipc-control.json
+// for drop commands and counters (admin E2E process).
+
+func e2eCmdDir() string {
+	return filepath.Join(os.TempDir(), "dadjoke-ipc-cmd")
+}
 
 func forcedProtocol() int {
 	if v := os.Getenv("DAD_JOKE_IPC_PROTOCOL"); v != "" {
@@ -26,26 +31,19 @@ func forcedProtocol() int {
 			return n
 		}
 	}
-	path := filepath.Join(installer.DefaultPaths().DataDir, "ipc-control.json")
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(filepath.Join(e2eCmdDir(), "force_protocol"))
 	if err != nil {
 		return 0
 	}
-	var ctrl struct {
-		ForceProtocol int `json:"force_protocol"`
-	}
-	if json.Unmarshal(raw, &ctrl) != nil {
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || n <= 0 {
 		return 0
 	}
-	if ctrl.ForceProtocol > 0 {
-		return ctrl.ForceProtocol
-	}
-	return 0
+	return n
 }
 
 func e2eAfterHello(c *ipc.Conn) error {
-	dir := filepath.Join(os.TempDir(), "dadjoke-ipc-cmd")
-	marker := filepath.Join(dir, "oversize")
+	marker := filepath.Join(e2eCmdDir(), "oversize")
 	if _, err := os.Stat(marker); err != nil {
 		return nil
 	}
@@ -53,9 +51,7 @@ func e2eAfterHello(c *ipc.Conn) error {
 	// Send a frame header declaring MaxFrameBytes+1 without allocating that size.
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(ipc.MaxFrameBytes+1))
-	raw := c.Raw()
-	_, err := raw.Write(hdr[:])
-	// Give the server a moment to observe the header before we continue.
+	_, err := c.Raw().Write(hdr[:])
 	time.Sleep(50 * time.Millisecond)
 	return err
 }

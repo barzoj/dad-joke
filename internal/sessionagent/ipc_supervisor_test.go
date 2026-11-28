@@ -11,13 +11,14 @@ import (
 	"github.com/barzoj/dad-joke/internal/service"
 )
 
-func TestSupervisorIPCConnectedAndMismatchNoRespawn(t *testing.T) {
+func TestSupervisorIPCConnectedMismatchDropNoRespawn(t *testing.T) {
 	hub := ipc.NewMemHub()
 	events := make(chan service.Event, 4)
 	clock := newMemClock(time.Now())
 	launcher := newFakeLauncher(1)
 	sessions := &fixedSessions{list: []Session{{ID: 1, UserName: "u", UserSID: "S-1-5-21-1"}}}
 	var restarts atomic.Int32
+	stats := &ipc.Stats{}
 	sup := &Supervisor{
 		Events:          events,
 		Sessions:        sessions,
@@ -27,7 +28,7 @@ func TestSupervisorIPCConnectedAndMismatchNoRespawn(t *testing.T) {
 		Log:             NopLogger{},
 		IntervalSeconds: 15,
 		IPCListen:       hub.Listen,
-		IPCStats:        &ipc.Stats{},
+		IPCStats:        stats,
 		children:        make(map[uint32]*tracked),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -67,29 +68,11 @@ func TestSupervisorIPCConnectedAndMismatchNoRespawn(t *testing.T) {
 	}
 
 	launchesBefore := launcher.launchCount()
+	mismatchBefore := stats.VersionMismatch.Load()
 
-	// Spoofed PID must be refused and must not respawn.
-	spoofDeadline := time.Now().Add(2 * time.Second)
-	for {
-		stream, err := hub.DialAs(ctx, 1, ipc.ExpectedClient{PID: 9999, SessionID: 1})
-		if err == nil {
-			cc := ipc.NewConn(stream)
-			_ = cc.WriteMessage(ipc.NewHello(ipc.ProtocolVersion, "evil", 1, 9999))
-			time.Sleep(50 * time.Millisecond)
-			_ = stream.Close()
-			break
-		}
-		if time.Now().After(spoofDeadline) {
-			break // listener may be busy with the good client; refusal covered in ipc tests
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if launcher.launchCount() != launchesBefore {
-		t.Fatalf("spoof triggered respawn: %d → %d", launchesBefore, launcher.launchCount())
-	}
-
-	// Version-mismatch against the live connection is covered in ipc tests;
-	// ensure DropIPC does not respawn.
+	// Stop the good client and drop so we can present a version-mismatched peer
+	// with the same verified PID (no respawn).
+	clientCancel()
 	sup.DropIPC(1)
 	deadline = time.Now().Add(2 * time.Second)
 	for sup.Connected(1) {
@@ -98,16 +81,50 @@ func TestSupervisorIPCConnectedAndMismatchNoRespawn(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if launcher.launchCount() != launchesBefore {
-		t.Fatal("drop triggered respawn")
-	}
 
-	// Client should reconnect without process restart.
+	mismatchCtx, mismatchCancel := context.WithCancel(ctx)
+	defer mismatchCancel()
+	bad := ipc.NewClient(ipc.ClientConfig{
+		SessionID: 1,
+		PID:       child.PID(),
+		Protocol:  99,
+		Dial: func(ctx context.Context, sid uint32) (io.ReadWriteCloser, error) {
+			return hub.DialAs(ctx, sid, ipc.ExpectedClient{PID: child.PID(), SessionID: sid})
+		},
+	})
+	go func() { _ = bad.Run(mismatchCtx) }()
+
+	deadline = time.Now().Add(3 * time.Second)
+	for stats.VersionMismatch.Load() <= mismatchBefore {
+		if time.Now().After(deadline) {
+			t.Fatal("version mismatch not counted")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sup.Connected(1) {
+		t.Fatal("connected after version mismatch")
+	}
+	if launcher.launchCount() != launchesBefore {
+		t.Fatalf("mismatch triggered respawn: %d → %d", launchesBefore, launcher.launchCount())
+	}
+	mismatchCancel()
+
+	// Good client reconnects without process restart.
+	clientCtx2, clientCancel2 := context.WithCancel(ctx)
+	defer clientCancel2()
+	good := ipc.NewClient(ipc.ClientConfig{
+		SessionID: 1,
+		PID:       child.PID(),
+		Protocol:  ipc.ProtocolVersion,
+		Dial: func(ctx context.Context, sid uint32) (io.ReadWriteCloser, error) {
+			return hub.DialAs(ctx, sid, ipc.ExpectedClient{PID: child.PID(), SessionID: sid})
+		},
+	})
+	go func() { _ = good.Run(clientCtx2) }()
 	deadline = time.Now().Add(3 * time.Second)
 	for !sup.Connected(1) {
 		if time.Now().After(deadline) {
-			t.Fatal("did not reconnect after drop")
+			t.Fatal("did not reconnect after mismatch")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -116,7 +133,7 @@ func TestSupervisorIPCConnectedAndMismatchNoRespawn(t *testing.T) {
 	}
 
 	// Process exit does respawn.
-	clientCancel()
+	clientCancel2()
 	child.kill()
 	deadline = time.Now().Add(2 * time.Second)
 	for launcher.launchCount() <= launchesBefore {

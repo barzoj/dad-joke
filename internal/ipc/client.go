@@ -83,7 +83,7 @@ func (c *Client) session(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	conn := NewConn(stream)
 	hello := NewHello(c.cfg.Protocol, c.cfg.AgentVersion, c.cfg.SessionID, c.cfg.PID)

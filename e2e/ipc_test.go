@@ -25,11 +25,35 @@ type ipcStatus struct {
 	Stats     ipc.Snapshot    `json:"stats"`
 }
 
+func ipcCmdDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(os.TempDir(), "dadjoke-ipc-cmd")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func writeForceProtocol(t *testing.T, n int) {
+	t.Helper()
+	path := filepath.Join(ipcCmdDir(t), "force_protocol")
+	if n <= 0 {
+		_ = os.Remove(path)
+		return
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n", n)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestT22_VersionedIPC covers Issue #45 acceptance on a live Windows session.
 func TestT22_VersionedIPC(t *testing.T) {
 	bin := testBinary(t)
 	cleanupInstall(t, bin)
 	t.Cleanup(func() { cleanupInstall(t, bin) })
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), "dadjoke-ipc-cmd"))
+	})
 
 	mock := startMockFactsAPI(t)
 	token := "e2e-ipc-token-" + randomSuffix(8)
@@ -79,30 +103,41 @@ func TestT22_VersionedIPC(t *testing.T) {
 
 	// Oversize from session agent (e2ediag AfterHello hook via TEMP marker).
 	overBefore := readIPCStatus(t).Stats.Oversize
-	overDir := filepath.Join(os.TempDir(), "dadjoke-ipc-cmd")
-	_ = os.MkdirAll(overDir, 0o700)
-	overMarker := filepath.Join(overDir, "oversize")
+	overMarker := filepath.Join(ipcCmdDir(t), "oversize")
 	if err := os.WriteFile(overMarker, []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeIPCControl(t, map[string]any{"action": "drop"})
 	waitIPCStat(t, func(s ipcStatus) bool {
-		return s.Stats.Oversize > overBefore || anyConnected(s)
-	}, 30*time.Second, "oversize or reconnect")
-	// Agent reconnects either way; service must stay Running.
+		return s.Stats.Oversize > overBefore
+	}, 30*time.Second, "oversize counter")
 	waitServiceState(t, "Running", 30*time.Second)
 	_ = os.Remove(overMarker)
+	// Legitimate reconnect after oversize must succeed.
+	waitIPCConnected(t, 45*time.Second)
+	pidAfter = waitSessionAgent(t, 15*time.Second)
 
-	// Version mismatch: force protocol on next agent launch via control file.
+	// Version mismatch: TEMP force_protocol marker (user-writable).
 	mismatchBefore := readIPCStatus(t).Stats.VersionMismatch
-	writeIPCControl(t, map[string]any{"force_protocol": 99})
+	hsBefore := readIPCStatus(t).Stats.HandshakeOK
+	writeForceProtocol(t, 99)
 	mustPowershell(t, fmt.Sprintf(`Stop-Process -Id %d -Force`, pidAfter))
 	newPID := waitSessionAgentNot(t, pidAfter, 45*time.Second)
 	waitIPCStat(t, func(s ipcStatus) bool {
-		return s.Stats.VersionMismatch > mismatchBefore || !anyConnected(s)
-	}, 30*time.Second, "version mismatch")
-	// No respawn storm: PID stable for a few seconds while mismatched.
-	time.Sleep(5 * time.Second)
+		return s.Stats.VersionMismatch > mismatchBefore
+	}, 30*time.Second, "version_mismatch counter")
+	// Hold !connected for a window; handshake must not succeed for this agent.
+	holdUntil := time.Now().Add(5 * time.Second)
+	for time.Now().Before(holdUntil) {
+		st := readIPCStatus(t)
+		if anyConnected(st) {
+			t.Fatalf("connected during version mismatch; status=%+v", st)
+		}
+		if st.Stats.HandshakeOK > hsBefore {
+			t.Fatalf("handshake_ok advanced during mismatch: %d → %d", hsBefore, st.Stats.HandshakeOK)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if countSessionAgents(t) != 1 {
 		t.Fatalf("respawn storm: agents=%d", countSessionAgents(t))
 	}
@@ -113,7 +148,7 @@ func TestT22_VersionedIPC(t *testing.T) {
 	waitServiceState(t, "Running", 10*time.Second)
 
 	// Clear force_protocol; kill → good handshake again.
-	writeIPCControl(t, map[string]any{"force_protocol": 0})
+	writeForceProtocol(t, 0)
 	mustPowershell(t, fmt.Sprintf(`Stop-Process -Id %d -Force`, newPID))
 	_ = waitSessionAgentNot(t, newPID, 45*time.Second)
 	waitIPCConnected(t, 45*time.Second)
@@ -222,19 +257,9 @@ func spoofHello(t *testing.T, pipeName string, sessionID, fakePID uint32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := windows.CreateFile(
-		path,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		0,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL,
-		0,
-	)
-	if err != nil {
-		// Pipe may not be listening while a connection is active — try drop first.
-		writeIPCControl(t, map[string]any{"action": "drop"})
-		time.Sleep(500 * time.Millisecond)
+	var h windows.Handle
+	deadline := time.Now().Add(15 * time.Second)
+	for {
 		h, err = windows.CreateFile(
 			path,
 			windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -244,13 +269,18 @@ func spoofHello(t *testing.T, pipeName string, sessionID, fakePID uint32) {
 			windows.FILE_ATTRIBUTE_NORMAL,
 			0,
 		)
-		if err != nil {
-			t.Logf("spoof CreateFile: %v (may race with reconnect)", err)
-			return
+		if err == nil {
+			break
 		}
+		// Pipe may not be listening while a connection is active — drop and retry.
+		writeIPCControl(t, map[string]any{"action": "drop"})
+		if time.Now().After(deadline) {
+			t.Fatalf("spoof CreateFile(%s) after retries: %v", pipeName, err)
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 	f := os.NewFile(uintptr(h), pipeName)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	msg := ipc.NewHello(ipc.ProtocolVersion, "spoof", sessionID, fakePID)
 	payload, err := ipc.EncodeMessage(msg)
 	if err != nil {
@@ -264,7 +294,6 @@ func spoofHello(t *testing.T, pipeName string, sessionID, fakePID uint32) {
 
 func assertPipeACL(t *testing.T, pipeName string, sessionAgentPID int) {
 	t.Helper()
-	// Named pipes use SE_KERNEL_OBJECT / SE_FILE_OBJECT depending on path form.
 	sd, err := windows.GetNamedSecurityInfo(
 		pipeName,
 		windows.SE_KERNEL_OBJECT,

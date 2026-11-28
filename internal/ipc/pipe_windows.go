@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -161,13 +162,15 @@ func (a *winAcceptor) Accept(ctx context.Context) (io.ReadWriteCloser, ExpectedC
 }
 
 // getNamedPipeClientSessionId wraps GetNamedPipeClientSessionId (not yet in x/sys).
+// Mirrors the errno handling used by generated x/sys wrappers such as
+// GetNamedPipeClientProcessId.
 func getNamedPipeClientSessionId(pipe windows.Handle, sessionID *uint32) error {
 	r1, _, e1 := procGetNamedPipeClientSessionId.Call(uintptr(pipe), uintptr(unsafe.Pointer(sessionID)))
 	if r1 == 0 {
-		if e1 != 0 {
-			return error(e1)
+		if errno, ok := e1.(syscall.Errno); ok && errno != 0 {
+			return errno
 		}
-		return windows.EINVAL
+		return syscall.EINVAL
 	}
 	return nil
 }

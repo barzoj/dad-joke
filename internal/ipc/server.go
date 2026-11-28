@@ -14,7 +14,7 @@ func ServeConn(ctx context.Context, stream io.ReadWriteCloser, cfg ServerConfig)
 	if stream == nil {
 		return fmt.Errorf("ipc: nil stream")
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	if cfg.Handler == nil {
 		cfg.Handler = NopHandler{}
@@ -63,7 +63,7 @@ func ServeConn(ctx context.Context, stream io.ReadWriteCloser, cfg ServerConfig)
 	if hello.Protocol != ProtocolVersion {
 		cfg.Stats.VersionMismatch.Add(1)
 		_ = conn.WriteMessage(NewReject(RejectVersionMismatch, fmt.Sprintf("want protocol %d", ProtocolVersion)))
-		cfg.Log("ipc: session %d version mismatch (client=%d)", cfg.SessionID, hello.Protocol)
+		logRate(cfg.Log, rate, "ipc: session %d version mismatch (client=%d)", cfg.SessionID, hello.Protocol)
 		return fmt.Errorf("ipc: version mismatch")
 	}
 	// Cross-check claimed identity against verified OS values (OS values win).
